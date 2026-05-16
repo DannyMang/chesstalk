@@ -1,0 +1,43 @@
+# deps
+node_modules/
+
+# build output
+.next/
+dist/
+build/
+out/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+bun-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# local AI/editor state
+.claude/
+.cursor/
+
+# bun
+bun.lockb
+.bun/
+
+# coverage
+coverage/
+*.lcov
+
+# misc
+*.tsbuildinfo
+.turbo/

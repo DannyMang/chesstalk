@@ -1,0 +1,35 @@
+{
+  "name": "@chesstalk/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@clerk/nextjs": "^6.0.0",
+    "@chesstalk/shared": "workspace:*",
+    "chess.js": "^1.4.0",
+    "react-chessboard": "^5.4.1",
+    "swr": "^2.2.5",
+    "mongodb": "^6.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/node": "^22.0.0",
+    "tailwindcss": "^4.0.0",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@eslint/eslintrc": "^3.0.0",
+    "eslint": "^9.0.0",
+    "eslint-config-next": "^15.0.0"
+  }
+}

@@ -1,0 +1,6 @@
+[install]
+# Use workspace protocol for internal packages.
+exact = false
+
+[install.cache]
+disable = false
