@@ -3,6 +3,8 @@ package ws
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -77,7 +79,6 @@ func (s *STTService) StartStream(opts STTStreamOptions) (*STTStream, error) {
 	q.Set("language", "en-US")
 	q.Set("interim_results", "true")
 	q.Set("endpointing", "250")
-	q.Set("utterance_end_ms", "700")
 	q.Set("vad_events", "true")
 	q.Set("numerals", "true")
 	q.Set("mip_opt_out", "true")
@@ -88,9 +89,9 @@ func (s *STTService) StartStream(opts STTStreamOptions) (*STTStream, error) {
 
 	header := http.Header{}
 	header.Set("Authorization", "Token "+s.apiKey)
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), header)
+	conn, resp, err := websocket.DefaultDialer.Dial(u.String(), header)
 	if err != nil {
-		return nil, err
+		return nil, s.providerDialError(resp, err)
 	}
 	stream := &STTStream{
 		gameID:  opts.GameID,
@@ -104,6 +105,39 @@ func (s *STTService) StartStream(opts STTStreamOptions) (*STTStream, error) {
 	go stream.keepAliveLoop()
 	stream.logger.Info("deepgram stream started", "keyterms", len(opts.Keyterms))
 	return stream, nil
+}
+
+func (s *STTService) providerDialError(resp *http.Response, err error) error {
+	if resp == nil {
+		s.logger.Warn("deepgram websocket dial failed", "err", err)
+		return fmt.Errorf("speech-to-text connection failed: %w", err)
+	}
+	body := readProviderErrorBody(resp.Body)
+	s.logger.Warn(
+		"deepgram websocket handshake rejected",
+		"status", resp.Status,
+		"body", body,
+		"err", err,
+	)
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return errors.New("speech-to-text provider rejected the API key")
+	}
+	if body != "" {
+		return fmt.Errorf("speech-to-text provider rejected the stream: %s", body)
+	}
+	return fmt.Errorf("speech-to-text provider rejected the stream: %s", resp.Status)
+}
+
+func readProviderErrorBody(body io.ReadCloser) string {
+	if body == nil {
+		return ""
+	}
+	defer body.Close()
+	data, err := io.ReadAll(io.LimitReader(body, 2048))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func boundedKeyterms(keyterms []string) []string {
