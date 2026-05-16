@@ -17,7 +17,7 @@ export type ClientGameMessage =
 
 // Messages from server → client on the /game WebSocket.
 export type ServerGameMessage =
-  | { type: "queue:waiting"; mode: Mode; timeControl: TimeControl; queueDepth: number }
+  | { type: "queue:waiting"; mode: Mode; timeControl: TimeControl; queueDepth: number; totalQueueDepth?: number }
   | { type: "invite:created"; inviteId: string; mode: Mode; timeControl: TimeControl }
   | { type: "game:start"; gameId: string; color: Color; opponent: OpponentInfo; mode: Mode; timeControl: TimeControl }
   | { type: "game:state"; gameId: string; fen: string; turn: Color; whiteClockMs: number; blackClockMs: number; lastMove: MoveRecord | null; moves?: MoveRecord[]; illegalCount?: Record<Color, number> }

@@ -100,6 +100,12 @@ func (m *Matchmaker) Depth(mode string, tc TimeControl) int {
 	return 0
 }
 
+func (m *Matchmaker) TotalDepth() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.pools)
+}
+
 func poolKey(mode string, tc TimeControl) string {
 	return fmt.Sprintf("%s|%d+%d", mode, tc.InitialSeconds, tc.IncrementSeconds)
 }

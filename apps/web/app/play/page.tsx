@@ -55,7 +55,13 @@ type SetupPanel = "regular" | "bot";
 
 type Phase =
   | { kind: "pre" }
-  | { kind: "queueing"; mode: Mode; timeControl: TimeControl; queueDepth: number }
+  | {
+      kind: "queueing";
+      mode: Mode;
+      timeControl: TimeControl;
+      queueDepth: number;
+      totalQueueDepth: number;
+    }
   | {
       kind: "in-game";
       gameId: string;
@@ -247,6 +253,7 @@ function PlayClient() {
       mode: selectedMode,
       timeControl,
       queueDepth: 0,
+      totalQueueDepth: 0,
     });
     send({ type: "queue:join", mode: selectedMode, timeControl });
   }, [selectedMode, selectedPreset, send]);
@@ -330,6 +337,7 @@ function PlayClient() {
         mode={phase.mode}
         timeControl={phase.timeControl}
         queueDepth={phase.queueDepth}
+        totalQueueDepth={phase.totalQueueDepth}
         onCancel={cancelQueue}
       />
     );
@@ -364,7 +372,11 @@ function reducePhase(current: Phase, msg: ServerGameMessage): Phase {
   switch (msg.type) {
     case "queue:waiting":
       if (current.kind !== "queueing") return current;
-      return { ...current, queueDepth: msg.queueDepth };
+      return {
+        ...current,
+        queueDepth: msg.queueDepth,
+        totalQueueDepth: msg.totalQueueDepth ?? msg.queueDepth,
+      };
 
     case "game:start":
       return {
@@ -879,8 +891,11 @@ function QueueingView(props: {
   mode: Mode;
   timeControl: TimeControl;
   queueDepth: number;
+  totalQueueDepth: number;
   onCancel: () => void;
 }) {
+  const poolLabel = props.queueDepth === 1 ? "person" : "people";
+  const totalLabel = props.totalQueueDepth === 1 ? "person" : "people";
   return (
     <section className="mx-auto flex max-w-md flex-col items-center gap-6 py-16 text-center">
       <div className="h-10 w-10 animate-spin rounded-full border-4 border-neutral-300 border-t-emerald-600" />
@@ -888,8 +903,13 @@ function QueueingView(props: {
         <h1 className="text-2xl font-semibold">Looking for opponent…</h1>
         <p className="text-sm text-neutral-500">
           {props.mode === Mode.Easy ? "Easy" : "Blindfold"} ·{" "}
-          {props.timeControl.initialSeconds / 60}+{props.timeControl.incrementSeconds} ·
-          queue depth: {props.queueDepth}
+          {props.timeControl.initialSeconds / 60}+{props.timeControl.incrementSeconds}
+        </p>
+        <p className="text-sm text-neutral-400">
+          {props.queueDepth} {poolLabel} searching this pool
+        </p>
+        <p className="text-xs text-neutral-500">
+          {props.totalQueueDepth} {totalLabel} searching across all queues
         </p>
       </div>
       <button

@@ -524,10 +524,11 @@ func (c *client) handleQueueJoin(msg protocol.GameMessage) {
 	result := c.hub.matchmaker.Enqueue(c.userID, c, msg.Mode, game.TimeControl(msg.TimeControl), info)
 	if !result.Matched {
 		c.sendJSON(map[string]any{
-			"type":        "queue:waiting",
-			"mode":        msg.Mode,
-			"timeControl": msg.TimeControl,
-			"queueDepth":  1,
+			"type":            "queue:waiting",
+			"mode":            msg.Mode,
+			"timeControl":     msg.TimeControl,
+			"queueDepth":      c.hub.matchmaker.Depth(msg.Mode, game.TimeControl(msg.TimeControl)),
+			"totalQueueDepth": c.hub.matchmaker.TotalDepth(),
 		})
 		return
 	}
