@@ -44,4 +44,5 @@ export type ClientAudioMessage =
 export type ServerAudioMessage =
   | { type: "stt:interim"; gameId: string; text: string }
   | { type: "stt:final"; gameId: string; text: string }
+  | { type: "stt:ambiguous"; gameId: string; message: string; candidates: string[] }
   | { type: "stt:error"; gameId: string; message: string };

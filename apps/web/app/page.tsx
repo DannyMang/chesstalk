@@ -10,6 +10,8 @@ import {
   type GameDocumentRaw,
 } from "../lib/db.ts";
 
+export const dynamic = "force-dynamic";
+
 function BoardPreview() {
   return (
     <div className="mx-auto aspect-square w-full max-w-[560px] rounded shadow-2xl shadow-black/40">

@@ -8,6 +8,8 @@ import {
 } from "../../lib/db.ts";
 import { ProfileNameForm } from "./name-form.tsx";
 
+export const dynamic = "force-dynamic";
+
 export default async function ProfilePage() {
   const user = await currentUser();
   if (!user) {

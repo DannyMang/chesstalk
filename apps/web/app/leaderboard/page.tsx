@@ -2,6 +2,8 @@ import Link from "next/link";
 import { Mode, STARTING_RATING } from "@chesstalk/shared";
 import { getDb, ratingsCollection, usersCollection } from "../../lib/db.ts";
 
+export const dynamic = "force-dynamic";
+
 interface LeaderboardRow {
   userId: string;
   username: string;

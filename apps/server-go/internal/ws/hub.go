@@ -396,6 +396,15 @@ func (c *client) handleTranscript(msg protocol.AudioMessage) {
 	c.sendJSON(map[string]any{"type": "stt:interim", "gameId": msg.GameID, "text": msg.Text})
 	result := actor.ProposeSpokenMove(c.userID, msg.Text, time.Now())
 	if !result.OK {
+		if result.Ambiguous {
+			c.sendJSON(map[string]any{
+				"type":       "stt:ambiguous",
+				"gameId":     msg.GameID,
+				"message":    result.Reason,
+				"candidates": result.CandidateLabels,
+			})
+			return
+		}
 		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": result.Reason})
 		return
 	}

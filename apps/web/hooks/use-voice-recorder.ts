@@ -85,7 +85,9 @@ export function useVoiceRecorder(opts: UseVoiceRecorderOptions): void {
       return;
     }
     recorder.ondataavailable = (ev: BlobEvent) => {
-      if (ev.data && ev.data.size > 0) onChunkRef.current(ev.data);
+      if (ev.data && ev.data.size > 0) {
+        onChunkRef.current(ev.data);
+      }
     };
     recorder.onerror = (ev: Event) => {
       // ErrorEvent shape varies between browsers; coerce safely.

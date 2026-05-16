@@ -63,11 +63,13 @@ type ClockSnapshot struct {
 }
 
 type MoveResult struct {
-	OK           bool
-	Move         MoveRecord
-	Reason       string
-	IllegalCount int
-	Terminal     bool
+	OK              bool
+	Move            MoveRecord
+	Reason          string
+	IllegalCount    int
+	Terminal        bool
+	Ambiguous       bool
+	CandidateLabels []string
 }
 
 func NewActor(params NewActorParams) *Actor {
@@ -356,11 +358,37 @@ func (a *Actor) ProposeMove(userID string, raw string, now time.Time) MoveResult
 }
 
 func (a *Actor) ProposeSpokenMove(userID string, text string, now time.Time) MoveResult {
-	for _, candidate := range NormalizeSpokenMove(text) {
-		result := a.ProposeMove(userID, candidate, now)
-		if result.OK || result.Reason != "Illegal or unparseable move" {
-			return result
+	a.mu.Lock()
+	if a.status != "active" {
+		a.mu.Unlock()
+		return MoveResult{Reason: "Game is not active"}
+	}
+	color := a.userColorLocked(userID)
+	if color == "" {
+		a.mu.Unlock()
+		return MoveResult{Reason: "Not a player in this game"}
+	}
+	if color != a.turnLocked() {
+		count := a.illegalCount[color]
+		a.mu.Unlock()
+		return MoveResult{Reason: "Not your turn", IllegalCount: count}
+	}
+	position := a.chessGame.Position()
+	a.mu.Unlock()
+
+	resolution := ResolveSpokenMove(position, text)
+	if resolution.Confident && resolution.Move != nil {
+		return a.ProposeMove(userID, chess.AlgebraicNotation{}.Encode(position, resolution.Move), now)
+	}
+	if resolution.Ambiguous {
+		return MoveResult{
+			Reason:          "Ambiguous move",
+			Ambiguous:       true,
+			CandidateLabels: resolution.CandidateLabels,
 		}
+	}
+	if !LooksLikeChessIntent(text) {
+		return MoveResult{Reason: "No chess move heard"}
 	}
 	return a.ProposeMove(userID, text, now)
 }
@@ -383,16 +411,7 @@ func (a *Actor) RandomLegalMoveSAN() (string, bool) {
 func (a *Actor) LegalMoveKeyterms() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	moves := a.chessGame.ValidMoves()
-	keyterms := make([]string, 0, len(moves)*2)
-	for _, move := range moves {
-		keyterms = append(
-			keyterms,
-			chess.AlgebraicNotation{}.Encode(a.chessGame.Position(), move),
-			chess.UCINotation{}.Encode(a.chessGame.Position(), move),
-		)
-	}
-	return dedupe(keyterms)
+	return KeytermsForPosition(a.chessGame.Position())
 }
 
 func (a *Actor) Resign(userID string, now time.Time) bool {

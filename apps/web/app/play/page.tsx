@@ -939,6 +939,9 @@ function InGameView(props: {
     onMessage: (msg) => {
       if (msg.type === "stt:interim" || msg.type === "stt:final") {
         setVoiceTranscript(msg.text);
+      } else if (msg.type === "stt:ambiguous") {
+        const options = msg.candidates.length > 0 ? `: ${msg.candidates.join(" or ")}` : "";
+        setVoiceTranscript(`${msg.message}${options}`);
       } else if (msg.type === "stt:error") {
         setVoiceTranscript(msg.message);
       }
