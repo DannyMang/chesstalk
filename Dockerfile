@@ -7,14 +7,17 @@ RUN go mod download
 COPY apps/server-go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/chesstalk-server ./cmd/chesstalk-server
 
-FROM alpine:3.21
+FROM debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates stockfish
-RUN adduser -D -H chesstalk
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates stockfish \
+  && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --create-home --home-dir /home/chesstalk chesstalk
 USER chesstalk
 WORKDIR /app
 
 COPY --from=build /out/chesstalk-server /app/chesstalk-server
 
+ENV STOCKFISH_PATH=/usr/games/stockfish
 EXPOSE 8787
 CMD ["/app/chesstalk-server"]

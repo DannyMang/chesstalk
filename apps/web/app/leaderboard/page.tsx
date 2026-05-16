@@ -11,24 +11,28 @@ interface LeaderboardRow {
 
 export default async function LeaderboardPage() {
   const db = await getDb();
-  const users = await usersCollection(db).find({}).limit(100).toArray();
-  const ratings = await ratingsCollection(db).find({}).toArray();
+  const ratings = await ratingsCollection(db).find({ games: { $gt: 0 } }).toArray();
+  const userIds = Array.from(new Set(ratings.map((rating) => rating.userId)));
+  const users = userIds.length
+    ? await usersCollection(db)
+        .find({ _id: { $in: userIds } })
+        .toArray()
+    : [];
+  const usernamesById = new Map(users.map((user) => [user._id, user.username]));
   const byUser = new Map<string, LeaderboardRow>();
 
-  for (const user of users) {
-    byUser.set(user._id, {
-      userId: user._id,
-      username: user.username,
+  for (const rating of ratings) {
+    const username = usernamesById.get(rating.userId);
+    if (!username) continue;
+    const row = byUser.get(rating.userId) ?? {
+      userId: rating.userId,
+      username,
       easy: STARTING_RATING,
       blindfold: STARTING_RATING,
-    });
-  }
-
-  for (const rating of ratings) {
-    const row = byUser.get(rating.userId);
-    if (!row) continue;
+    };
     if (rating.mode === Mode.Easy) row.easy = rating.rating;
     if (rating.mode === Mode.Blindfold) row.blindfold = rating.rating;
+    byUser.set(rating.userId, row);
   }
 
   const rows = Array.from(byUser.values())
