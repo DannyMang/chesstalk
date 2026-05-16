@@ -368,7 +368,7 @@ func (c *client) handleAudioStart(msg protocol.AudioMessage) {
 				c.handleTranscript(protocol.AudioMessage{Type: "audio:transcript", GameID: msg.GameID, Text: transcript.Text})
 				return
 			}
-			c.sendJSON(map[string]any{"type": "stt:interim", "gameId": msg.GameID, "text": transcript.Text})
+			c.handleInterimTranscript(msg.GameID, transcript.Text)
 		},
 		OnError: func(message string) {
 			c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": message})
@@ -383,6 +383,22 @@ func (c *client) handleAudioStart(msg protocol.AudioMessage) {
 
 func (c *client) handleAudioStop(msg protocol.AudioMessage) {
 	c.stopSTTStream()
+}
+
+func (c *client) handleInterimTranscript(gameID string, text string) {
+	if !c.ensureCanSpeak(gameID) {
+		return
+	}
+	actor := c.hub.registry.Get(gameID)
+	if actor == nil {
+		return
+	}
+	c.sendJSON(map[string]any{"type": "stt:interim", "gameId": gameID, "text": text})
+	result := actor.ProposeInterimSpokenMove(c.userID, text, time.Now())
+	if !result.OK {
+		return
+	}
+	c.confirmSpokenMove(actor, gameID, text, result)
 }
 
 func (c *client) handleTranscript(msg protocol.AudioMessage) {
@@ -408,8 +424,12 @@ func (c *client) handleTranscript(msg protocol.AudioMessage) {
 		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": result.Reason})
 		return
 	}
+	c.confirmSpokenMove(actor, msg.GameID, msg.Text, result)
+}
+
+func (c *client) confirmSpokenMove(actor *game.Actor, gameID string, text string, result game.MoveResult) {
 	c.stopSTTStream()
-	c.sendJSON(map[string]any{"type": "stt:final", "gameId": msg.GameID, "text": msg.Text})
+	c.sendJSON(map[string]any{"type": "stt:final", "gameId": gameID, "text": text})
 	snapshot := actor.ClockSnapshot(time.Now())
 	actor.Broadcast(map[string]any{
 		"type":         "move:confirmed",

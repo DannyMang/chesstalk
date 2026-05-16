@@ -198,6 +198,39 @@ func TestProposeSpokenMoveChargesChessIntentThatIsIllegal(t *testing.T) {
 	}
 }
 
+func TestProposeSpokenMoveDoesNotChargeIncompleteSpeech(t *testing.T) {
+	actor := newVoiceTestActor()
+	result := actor.ProposeSpokenMove("white", "knight to", time.Now())
+	if result.OK {
+		t.Fatal("expected incomplete speech not to move")
+	}
+	if result.IllegalCount != 0 {
+		t.Fatalf("expected no illegal strike, got %d", result.IllegalCount)
+	}
+}
+
+func TestProposeInterimSpokenMoveCanMoveWithoutFinal(t *testing.T) {
+	actor := newVoiceTestActor()
+	result := actor.ProposeInterimSpokenMove("white", "knight to f three", time.Now())
+	if !result.OK {
+		t.Fatalf("expected confident interim speech to move, got reason %q", result.Reason)
+	}
+	if result.Move.SAN != "Nf3" {
+		t.Fatalf("expected Nf3, got %q", result.Move.SAN)
+	}
+}
+
+func TestProposeInterimSpokenMoveDoesNotChargePartialIntent(t *testing.T) {
+	actor := newVoiceTestActor()
+	result := actor.ProposeInterimSpokenMove("white", "king to e two", time.Now())
+	if result.OK {
+		t.Fatal("expected illegal interim speech not to move")
+	}
+	if result.IllegalCount != 0 {
+		t.Fatalf("expected no illegal strike, got %d", result.IllegalCount)
+	}
+}
+
 func assertContains(t *testing.T, values []string, want string) {
 	t.Helper()
 	for _, value := range values {

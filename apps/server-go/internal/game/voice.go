@@ -210,6 +210,18 @@ func LooksLikeChessIntent(raw string) bool {
 	return false
 }
 
+func LooksLikeCompleteMoveIntent(raw string) bool {
+	tokens := tokenizeVoice(raw)
+	if len(tokens) == 0 {
+		return false
+	}
+	intent := parseVoiceIntent(tokens)
+	if intent.castle != 0 {
+		return true
+	}
+	return intent.hasDF && intent.hasDR
+}
+
 func KeytermsForPosition(position *chess.Position) []string {
 	terms := make(map[string]struct{})
 	add := func(value string) {

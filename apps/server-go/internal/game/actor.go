@@ -358,6 +358,14 @@ func (a *Actor) ProposeMove(userID string, raw string, now time.Time) MoveResult
 }
 
 func (a *Actor) ProposeSpokenMove(userID string, text string, now time.Time) MoveResult {
+	return a.proposeSpokenMove(userID, text, now, true)
+}
+
+func (a *Actor) ProposeInterimSpokenMove(userID string, text string, now time.Time) MoveResult {
+	return a.proposeSpokenMove(userID, text, now, false)
+}
+
+func (a *Actor) proposeSpokenMove(userID string, text string, now time.Time, final bool) MoveResult {
 	a.mu.Lock()
 	if a.status != "active" {
 		a.mu.Unlock()
@@ -387,7 +395,10 @@ func (a *Actor) ProposeSpokenMove(userID string, text string, now time.Time) Mov
 			CandidateLabels: resolution.CandidateLabels,
 		}
 	}
-	if !LooksLikeChessIntent(text) {
+	if !final {
+		return MoveResult{Reason: "No complete chess move heard"}
+	}
+	if !LooksLikeCompleteMoveIntent(text) {
 		return MoveResult{Reason: "No chess move heard"}
 	}
 	return a.ProposeMove(userID, text, now)
