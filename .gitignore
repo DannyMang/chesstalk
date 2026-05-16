@@ -11,6 +11,18 @@ out/
 .env
 .env.local
 .env.*.local
+**/.env
+**/.env.local
+**/.env.*.local
+
+# secrets / credentials
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+*credentials*.json
+*secret*.json
 
 # logs
 *.log

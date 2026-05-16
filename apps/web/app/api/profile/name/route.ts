@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { currentUser } from "@clerk/nextjs/server";
 import { ensureUserProfile, getDb, usersCollection } from "../../../../lib/db.ts";
+import { isAllowedDisplayName } from "../../../../lib/name-moderation.ts";
 
 const MAX_CHANGES = 3;
 const NAME_RE = /^[a-zA-Z0-9_-]{3,20}$/;
@@ -17,6 +18,12 @@ export async function POST(req: Request): Promise<NextResponse> {
   if (!NAME_RE.test(username)) {
     return NextResponse.json(
       { error: "Name must be 3-20 characters: letters, numbers, _ or -" },
+      { status: 400 },
+    );
+  }
+  if (!isAllowedDisplayName(username)) {
+    return NextResponse.json(
+      { error: "Choose a different display name" },
       { status: 400 },
     );
   }
