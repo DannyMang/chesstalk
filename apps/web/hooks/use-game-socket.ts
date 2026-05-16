@@ -42,6 +42,7 @@ export function useGameSocket(): UseGameSocketResult {
       getToken: () => getToken(),
       getGuestId: getOrCreateGuestId,
       onStatusChange: setStatus,
+      reconnectWindowMs: 10_000,
     });
     socket.on(fanout);
     socketRef.current = socket;

@@ -16,6 +16,7 @@ type Config struct {
 	ClerkAZP       []string
 	MongoURI       string
 	DeepgramAPIKey string
+	StockfishPath  string
 }
 
 func Load() Config {
@@ -29,6 +30,7 @@ func Load() Config {
 		ClerkAZP:       parseList(os.Getenv("CLERK_AUTHORIZED_PARTIES")),
 		MongoURI:       os.Getenv("MONGODB_URI"),
 		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
+		StockfishPath:  env("STOCKFISH_PATH", "stockfish"),
 	}
 }
 

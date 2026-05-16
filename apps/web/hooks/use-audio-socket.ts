@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import type { ClientAudioMessage, ServerAudioMessage } from "@chesstalk/shared";
 import {
@@ -79,5 +79,8 @@ export function useAudioSocket(opts: UseAudioSocketOptions): UseAudioSocketResul
     [],
   );
 
-  return { status, send, sendBinary };
+  return useMemo(
+    () => ({ status, send, sendBinary }),
+    [status, send, sendBinary],
+  );
 }

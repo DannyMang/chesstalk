@@ -138,7 +138,7 @@ async function checkBotGame() {
   game.send({ type: "game:resign", gameId });
   await game.waitFor("game:end", "bot game:end");
   game.close();
-  console.log("ok bot game, legal move, bot fallback, resign");
+  console.log("ok bot game, legal move, bot reply, resign");
 }
 
 async function checkInviteAndAudio() {

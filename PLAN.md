@@ -18,6 +18,7 @@ A verbal chess web app. Players speak their moves out loud; the server validates
 | Database | **MongoDB Atlas** (per spec) | Schema flexibility for match documents + native TTL indexes for the 7-week eviction. |
 | Auth | **Clerk** (per spec) | Stores Clerk `userId` as the foreign key everywhere. |
 | Real-time server | **Go WebSocket server** on **Railway** | Vercel is ideal for the web app, while Railway can run the long-lived WebSocket process. Goroutines and mutex-protected game actors fit the launch concurrency model. |
+| Mid-game disconnects | **10 s reconnect grace, then opponent wins** | Chess.com-style behavior: brief grace for flaky mobile/network drops, but the waiting player is not held hostage. If the game never progressed past move 0, record it as a resignation-style early exit. |
 | Voice privacy | **No peer audio.** STT happens server-side; opponent gets parsed text (+ optional TTS) | Hard requirement from spec. Also simplifies anti-cheat (server sees the audio path). |
 | OSS split | Public app monorepo + private infra repo | Mirrors Lichess (`lila` public, ops private). |
 
@@ -141,7 +142,7 @@ games  // TTL 7 weeks
   white: { userId, ratingBefore, ratingAfter }
   black: { userId, ratingBefore, ratingAfter }
   result: "white" | "black" | "draw" | null
-  termination: "checkmate" | "resignation" | "timeout" | "illegal_strikes" | "draw_*"
+  termination: "checkmate" | "resignation" | "timeout" | "illegal_strikes" | "disconnect" | "draw_*"
   pgn: string                                     // standard PGN, replayable by chess libraries
   moves: [                                        // for replay UI
     {
@@ -209,6 +210,17 @@ No external matchmaking lib. ~80 LOC. Revisit at 10k+ DAU.
 4. **Turn cycle** — voice pipeline (Section 3). On every move: server updates state, persists incremental move to MongoDB, broadcasts to both.
 5. **End conditions** — checkmate / stalemate / draw (notnil/chess detects) / timeout (server timer) / resignation (button: "say 'I resign' or click") / 3 illegal strikes.
 6. **Post-game** — show result, rating delta, link to replay. Both `ratings` rows updated. `games` doc finalized with `expiresAt`.
+
+### Disconnect / reconnect policy
+
+Use a Chess.com-style grace period rather than keeping disconnected games alive indefinitely:
+
+1. If a player's `/game` WebSocket drops after `game:start`, the server detaches that socket and marks the player as disconnected.
+2. The disconnected player gets **10 seconds** to reconnect with the same Clerk/guest identity and send `game:resume` for the active `gameId`.
+3. During the grace window, the opponent remains in-game and sees a reconnecting/abandoned-game countdown. The authoritative game clock can keep running, but the disconnect adjudication timer is separate so a network drop does not create an unbounded wait.
+4. If the player reconnects in time, the server reattaches the new socket, sends a fresh full `game:state` snapshot (FEN, clocks, all moves, illegal counts), and clears the disconnect timer.
+5. If the grace window expires, the opponent wins automatically. Use a distinct disconnect/abandonment termination for games with at least one move; if **no moves have been played**, record the result as a resignation-style early exit.
+6. This v1 policy is single-process only. Multi-server deployments need sticky routing or shared game/session state before reconnect can be reliable across instances.
 
 ### Blindfold mode UI
 
@@ -380,9 +392,9 @@ Scaled Matchmaking
 
  Add rating-window expansion over time.
 
- Add reconnect handling for dropped WebSocket clients.
+ Add reconnect handling for dropped WebSocket clients: 10 s same-identity `game:resume`, full state snapshot on success.
 
- Add abandoned-game cleanup.
+ Add abandoned-game cleanup: after the reconnect grace expires, award the opponent a win; move-0 disconnects are recorded as resignation-style exits.
 
  Add multi-server game routing strategy.
 

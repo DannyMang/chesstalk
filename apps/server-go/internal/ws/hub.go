@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/auth"
@@ -24,6 +25,7 @@ const (
 	pongWait       = 60 * time.Second
 	pingPeriod     = 30 * time.Second
 	maxControlSize = protocol.MaxAudioJSONBytes
+	reconnectGrace = 10 * time.Second
 )
 
 const botUserID = "bot:go-legal-move"
@@ -34,6 +36,7 @@ type Hub struct {
 	store      *store.MongoStore
 	auth       *auth.Verifier
 	stt        *STTService
+	bot        *BotEngine
 	registry   *game.Registry
 	matchmaker *game.Matchmaker
 	invites    *game.InviteRegistry
@@ -48,6 +51,7 @@ func NewHub(cfg config.Config, logger *slog.Logger, mongoStore *store.MongoStore
 		store:      mongoStore,
 		auth:       verifier,
 		stt:        NewSTTService(cfg, logger),
+		bot:        NewBotEngine(cfg, logger),
 		registry:   registry,
 		matchmaker: game.NewMatchmaker(),
 		invites:    game.NewInviteRegistry(),
@@ -180,6 +184,9 @@ type client struct {
 	logger      *slog.Logger
 	limiter     *ratelimit.Limiter
 	lastSeen    time.Time
+	writeMu     sync.Mutex
+	sttMu       sync.Mutex
+	sttStream   *STTStream
 }
 
 func (c *client) run() {
@@ -201,7 +208,11 @@ func (c *client) run() {
 	c.username = user.Username
 	c.logger = c.logger.With("userId", c.userID, "username", c.username)
 
-	c.conn.SetReadLimit(maxControlSize)
+	if c.kind == "audio" {
+		c.conn.SetReadLimit(protocol.MaxAudioFrameBytes)
+	} else {
+		c.conn.SetReadLimit(maxControlSize)
+	}
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
 		c.lastSeen = time.Now()
@@ -237,8 +248,11 @@ func (c *client) heartbeat(done <-chan struct{}) {
 		case <-done:
 			return
 		case <-ticker.C:
+			c.writeMu.Lock()
 			_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			err := c.conn.WriteMessage(websocket.PingMessage, nil)
+			c.writeMu.Unlock()
+			if err != nil {
 				c.logger.Warn("ping failed", "err", err)
 				_ = c.conn.Close()
 				return
@@ -274,6 +288,8 @@ func (c *client) handleGame(messageType int, data []byte) {
 		c.handleInviteCreate(msg)
 	case "invite:join":
 		c.handleInviteJoin(msg)
+	case "game:resume":
+		c.handleGameResume(msg)
 	case "move:propose":
 		c.handleMovePropose(msg)
 	case "game:resign":
@@ -296,7 +312,11 @@ func (c *client) handleAudio(messageType int, data []byte) {
 		if !c.limiter.Take("audio_frame") {
 			return
 		}
-		c.hub.stt.AcceptAudioFrame("", c.userID, data)
+		stream := c.currentSTTStream()
+		if stream == nil {
+			return
+		}
+		stream.AcceptAudioFrame(data)
 		return
 	}
 	if messageType != websocket.TextMessage {
@@ -315,6 +335,10 @@ func (c *client) handleAudio(messageType int, data []byte) {
 	}
 
 	switch msg.Type {
+	case "audio:start":
+		c.handleAudioStart(msg)
+	case "audio:stop":
+		c.handleAudioStop(msg)
 	case "audio:transcript":
 		c.handleTranscript(msg)
 	default:
@@ -322,19 +346,51 @@ func (c *client) handleAudio(messageType int, data []byte) {
 	}
 }
 
-func (c *client) handleTranscript(msg protocol.AudioMessage) {
+func (c *client) handleAudioStart(msg protocol.AudioMessage) {
+	c.stopSTTStream()
+	if !c.ensureCanSpeak(msg.GameID) {
+		return
+	}
 	actor := c.hub.registry.Get(msg.GameID)
 	if actor == nil {
 		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": "No active game " + msg.GameID})
 		return
 	}
-	color := actor.UserColor(c.userID)
-	if color == "" {
-		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": "Not a player in this game"})
+	stream, err := c.hub.stt.StartStream(STTStreamOptions{
+		GameID:   msg.GameID,
+		UserID:   c.userID,
+		Keyterms: chessVoiceKeyterms(actor),
+		OnTranscript: func(transcript STTTranscript) {
+			if transcript.Text == "" {
+				return
+			}
+			if transcript.Final {
+				c.handleTranscript(protocol.AudioMessage{Type: "audio:transcript", GameID: msg.GameID, Text: transcript.Text})
+				return
+			}
+			c.sendJSON(map[string]any{"type": "stt:interim", "gameId": msg.GameID, "text": transcript.Text})
+		},
+		OnError: func(message string) {
+			c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": message})
+		},
+	})
+	if err != nil {
+		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": err.Error()})
 		return
 	}
-	if color != actor.Turn() {
-		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": "Not your turn"})
+	c.setSTTStream(stream)
+}
+
+func (c *client) handleAudioStop(msg protocol.AudioMessage) {
+	c.stopSTTStream()
+}
+
+func (c *client) handleTranscript(msg protocol.AudioMessage) {
+	if !c.ensureCanSpeak(msg.GameID) {
+		return
+	}
+	actor := c.hub.registry.Get(msg.GameID)
+	if actor == nil {
 		return
 	}
 	c.sendJSON(map[string]any{"type": "stt:interim", "gameId": msg.GameID, "text": msg.Text})
@@ -343,6 +399,7 @@ func (c *client) handleTranscript(msg protocol.AudioMessage) {
 		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": result.Reason})
 		return
 	}
+	c.stopSTTStream()
 	c.sendJSON(map[string]any{"type": "stt:final", "gameId": msg.GameID, "text": msg.Text})
 	snapshot := actor.ClockSnapshot(time.Now())
 	actor.Broadcast(map[string]any{
@@ -354,6 +411,68 @@ func (c *client) handleTranscript(msg protocol.AudioMessage) {
 		"whiteClockMs": snapshot.WhiteClockMS,
 		"blackClockMs": snapshot.BlackClockMS,
 	})
+}
+
+func (c *client) ensureCanSpeak(gameID string) bool {
+	actor := c.hub.registry.Get(gameID)
+	if actor == nil {
+		c.sendJSON(map[string]any{"type": "stt:error", "gameId": gameID, "message": "No active game " + gameID})
+		return false
+	}
+	color := actor.UserColor(c.userID)
+	if color == "" {
+		c.sendJSON(map[string]any{"type": "stt:error", "gameId": gameID, "message": "Not a player in this game"})
+		return false
+	}
+	if color != actor.Turn() {
+		c.sendJSON(map[string]any{"type": "stt:error", "gameId": gameID, "message": "Not your turn"})
+		return false
+	}
+	return true
+}
+
+func (c *client) stopSTTStream() {
+	c.sttMu.Lock()
+	stream := c.sttStream
+	c.sttStream = nil
+	c.sttMu.Unlock()
+	if stream == nil {
+		return
+	}
+	stream.Close()
+}
+
+func (c *client) currentSTTStream() *STTStream {
+	c.sttMu.Lock()
+	defer c.sttMu.Unlock()
+	return c.sttStream
+}
+
+func (c *client) setSTTStream(stream *STTStream) {
+	c.sttMu.Lock()
+	c.sttStream = stream
+	c.sttMu.Unlock()
+}
+
+func chessVoiceKeyterms(actor *game.Actor) []string {
+	keyterms := []string{
+		"king", "queen", "rook", "bishop", "knight", "pawn",
+		"castle", "kingside", "queenside", "captures", "takes",
+		"check", "checkmate",
+		"a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8",
+		"b1", "b2", "b3", "b4", "b5", "b6", "b7", "b8",
+		"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8",
+		"d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8",
+		"e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8",
+		"f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8",
+		"g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8",
+		"h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8",
+	}
+	keyterms = append(keyterms, actor.LegalMoveKeyterms()...)
+	if len(keyterms) > 100 {
+		keyterms = keyterms[:100]
+	}
+	return keyterms
 }
 
 func (c *client) opponentInfo(mode string) game.OpponentInfo {
@@ -458,7 +577,7 @@ func (c *client) handleBotStart(msg protocol.GameMessage) {
 	strength := msg.Strength
 	botRating := float64(800 + strength*70)
 	player := game.PlayerSnapshot{UserID: info.UserID, Username: info.Username, RatingBefore: info.Rating}
-	bot := game.PlayerSnapshot{UserID: botUserID, Username: "Go Bot Lv " + intString(strength), RatingBefore: botRating}
+	bot := game.PlayerSnapshot{UserID: botUserID, Username: "Stockfish Lv " + intString(strength), RatingBefore: botRating}
 	white := player
 	black := bot
 	if playerColor == game.ColorBlack {
@@ -479,7 +598,7 @@ func (c *client) handleBotStart(msg protocol.GameMessage) {
 		c.finalizeAndBroadcast(ended)
 	})
 	actor.OnMove(func(moved *game.Actor, _ game.MoveRecord) {
-		c.scheduleBotMove(moved)
+		c.scheduleBotMove(moved, strength)
 	})
 	c.sendJSON(map[string]any{
 		"type":   "game:start",
@@ -495,11 +614,34 @@ func (c *client) handleBotStart(msg protocol.GameMessage) {
 	})
 	actor.Broadcast(actor.State(time.Now()))
 	if botColor == game.ColorWhite {
-		c.scheduleBotMove(actor)
+		c.scheduleBotMove(actor, strength)
 	}
 }
 
-func (c *client) scheduleBotMove(actor *game.Actor) {
+func (c *client) handleGameResume(msg protocol.GameMessage) {
+	actor := c.hub.registry.Get(msg.GameID)
+	if actor == nil {
+		c.sendJSON(map[string]any{"type": "error", "code": "game_not_found", "message": "No active game " + msg.GameID})
+		return
+	}
+	color := actor.UserColor(c.userID)
+	if color == "" {
+		c.sendJSON(map[string]any{"type": "error", "code": "not_player", "message": "Not a player in this game"})
+		return
+	}
+	actor.Attach(color, c)
+	c.sendJSON(map[string]any{
+		"type":        "game:start",
+		"gameId":      actor.ID,
+		"color":       color,
+		"opponent":    actor.OpponentInfoForColor(color),
+		"mode":        actor.Mode,
+		"timeControl": actor.TimeControl,
+	})
+	actor.Broadcast(actor.State(time.Now()))
+}
+
+func (c *client) scheduleBotMove(actor *game.Actor, strength int) {
 	if actor.UserColor(botUserID) != actor.Turn() {
 		return
 	}
@@ -508,7 +650,7 @@ func (c *client) scheduleBotMove(actor *game.Actor) {
 		if actor.UserColor(botUserID) != actor.Turn() {
 			return
 		}
-		raw, ok := actor.RandomLegalMoveSAN()
+		raw, ok := c.hub.bot.BestMoveSAN(actor, strength)
 		if !ok {
 			return
 		}
@@ -595,22 +737,45 @@ func (c *client) finalizeAndBroadcast(actor *game.Actor) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := c.hub.store.PersistFinishedGame(ctx, actor); err != nil {
+	finished, err := c.hub.store.PersistFinishedGame(ctx, actor)
+	if err != nil {
 		c.logger.Error("persist finished game failed", "gameId", actor.ID, "err", err)
+		finished = snapshot
 	}
 	cancel()
 	c.hub.registry.Unregister(actor.ID)
-	actor.Broadcast(map[string]any{
+	whiteDelta, blackDelta := ratingDeltas(finished)
+	actor.SendTo(game.ColorWhite, map[string]any{
 		"type":                "game:end",
 		"gameId":              actor.ID,
-		"result":              *snapshot.Result,
-		"termination":         *snapshot.Termination,
-		"ratingDeltaSelf":     0,
-		"ratingDeltaOpponent": 0,
+		"result":              *finished.Result,
+		"termination":         *finished.Termination,
+		"ratingDeltaSelf":     whiteDelta,
+		"ratingDeltaOpponent": blackDelta,
+	})
+	actor.SendTo(game.ColorBlack, map[string]any{
+		"type":                "game:end",
+		"gameId":              actor.ID,
+		"result":              *finished.Result,
+		"termination":         *finished.Termination,
+		"ratingDeltaSelf":     blackDelta,
+		"ratingDeltaOpponent": whiteDelta,
 	})
 }
 
+func ratingDeltas(doc game.GameDoc) (int, int) {
+	return ratingDelta(doc.White), ratingDelta(doc.Black)
+}
+
+func ratingDelta(player game.PlayerSnapshot) int {
+	if player.RatingAfter == nil {
+		return 0
+	}
+	return int(*player.RatingAfter - player.RatingBefore)
+}
+
 func (c *client) cleanup() {
+	c.stopSTTStream()
 	if c.userID == "" {
 		return
 	}
@@ -619,9 +784,36 @@ func (c *client) cleanup() {
 	for _, actor := range c.hub.registry.All() {
 		color := actor.UserColor(c.userID)
 		if color != "" {
-			actor.Detach(color, c)
+			if actor.Detach(color, c) {
+				disconnectedAt := time.Now()
+				if actor.MarkDisconnected(color, disconnectedAt) {
+					c.scheduleDisconnectForfeit(actor, color, disconnectedAt)
+				}
+			}
 		}
 	}
+}
+
+func (c *client) scheduleDisconnectForfeit(actor *game.Actor, color string, disconnectedAt time.Time) {
+	opponentColor := game.OtherColor(color)
+	actor.SendTo(opponentColor, map[string]any{
+		"type":                "opponent:disconnected",
+		"gameId":              actor.ID,
+		"color":               color,
+		"reconnectDeadlineMs": disconnectedAt.Add(reconnectGrace).UnixMilli(),
+		"reconnectGraceMs":    reconnectGrace.Milliseconds(),
+	})
+	go func() {
+		timer := time.NewTimer(reconnectGrace)
+		defer timer.Stop()
+		<-timer.C
+		if !actor.IsDisconnectedSince(color, disconnectedAt) {
+			return
+		}
+		if actor.ForfeitDisconnected(color, disconnectedAt, time.Now()) {
+			c.logger.Info("game forfeited after disconnect grace", "gameId", actor.ID, "color", color)
+		}
+	}()
 }
 
 func (c *client) sendJSON(value any) {
@@ -629,6 +821,8 @@ func (c *client) sendJSON(value any) {
 }
 
 func (c *client) SendJSON(value any) bool {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 	if err := c.conn.WriteJSON(value); err != nil {
 		c.logger.Warn("write failed", "err", err)
@@ -654,10 +848,14 @@ func (c *client) rateLimitedSTTError(bucket string, gameID string, message strin
 }
 
 func (c *client) closePolicy(reason string) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason), time.Now().Add(writeWait))
 }
 
 func (c *client) closeTooLarge(reason string) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseMessageTooBig, reason), time.Now().Add(writeWait))
 }
 
@@ -691,7 +889,7 @@ func gameBucket(messageType string) string {
 		return "invite"
 	case "move:propose":
 		return "move"
-	case "game:resign", "game:offerDraw", "game:acceptDraw":
+	case "game:resume", "game:resign", "game:offerDraw", "game:acceptDraw":
 		return "game_action"
 	case "bot:start":
 		return "bot"

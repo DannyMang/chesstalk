@@ -68,6 +68,7 @@ type Phase =
       snapshot: ClockSnapshot;
       lastError: string | null;
       illegalCount: number;
+      opponentDisconnectedUntil: number | null;
     }
   | {
       kind: "ended";
@@ -106,6 +107,8 @@ function describeTermination(t: Termination): string {
       return "Timeout";
     case "illegal_strikes":
       return "Illegal move strikes";
+    case "disconnect":
+      return "Disconnected";
     case "draw_stalemate":
       return "Stalemate";
     case "draw_threefold":
@@ -231,6 +234,12 @@ function PlayClient() {
     sendInvite(send, { type: "invite:join", inviteId });
   }, [inviteId, send, status]);
 
+  const activeGameId = phase.kind === "in-game" ? phase.gameId : null;
+  useEffect(() => {
+    if (status !== "open" || activeGameId === null) return;
+    send({ type: "game:resume", gameId: activeGameId });
+  }, [activeGameId, send, status]);
+
   const startQueue = useCallback((): void => {
     const timeControl = TIME_CONTROLS[selectedPreset];
     setPhase({
@@ -342,6 +351,7 @@ function PlayClient() {
   return (
     <InGameView
       phase={phase}
+      connected={status === "open"}
       moveInput={moveInput}
       onMoveInputChange={setMoveInput}
       onSubmitMove={submitMove}
@@ -374,6 +384,7 @@ function reducePhase(current: Phase, msg: ServerGameMessage): Phase {
         },
         lastError: null,
         illegalCount: 0,
+        opponentDisconnectedUntil: null,
       };
 
     case "game:state":
@@ -382,13 +393,15 @@ function reducePhase(current: Phase, msg: ServerGameMessage): Phase {
         ...current,
         fen: msg.fen,
         turn: msg.turn,
-        moves: msg.lastMove ? [msg.lastMove] : current.moves,
+        moves: msg.moves ?? (msg.lastMove ? [msg.lastMove] : current.moves),
         snapshot: {
           whiteMs: msg.whiteClockMs,
           blackMs: msg.blackClockMs,
           turn: msg.turn,
           asOf: Date.now(),
         },
+        illegalCount: msg.illegalCount?.[current.color] ?? current.illegalCount,
+        opponentDisconnectedUntil: null,
       };
 
     case "move:confirmed":
@@ -405,6 +418,7 @@ function reducePhase(current: Phase, msg: ServerGameMessage): Phase {
           asOf: Date.now(),
         },
         lastError: null,
+        opponentDisconnectedUntil: null,
       };
 
     case "move:rejected":
@@ -413,6 +427,14 @@ function reducePhase(current: Phase, msg: ServerGameMessage): Phase {
         ...current,
         lastError: msg.reason,
         illegalCount: msg.illegalCount,
+      };
+
+    case "opponent:disconnected":
+      if (current.kind !== "in-game" || current.gameId !== msg.gameId) return current;
+      if (msg.color === current.color) return current;
+      return {
+        ...current,
+        opponentDisconnectedUntil: msg.reconnectDeadlineMs,
       };
 
     case "game:end":
@@ -880,10 +902,12 @@ interface InGamePhase {
   snapshot: ClockSnapshot;
   lastError: string | null;
   illegalCount: number;
+  opponentDisconnectedUntil: number | null;
 }
 
 function InGameView(props: {
   phase: InGamePhase;
+  connected: boolean;
   moveInput: string;
   onMoveInputChange: (v: string) => void;
   onSubmitMove: (raw: string) => void;
@@ -891,11 +915,12 @@ function InGameView(props: {
 }) {
   const { phase } = props;
   const display = useClock(phase.snapshot);
+  const isReconnecting = !props.connected;
   const isYourTurn = phase.turn === phase.color;
   const lastMove = phase.moves.length > 0 ? phase.moves[phase.moves.length - 1] ?? null : null;
   const orientation: "white" | "black" = phase.color;
   const [voiceTranscript, setVoiceTranscript] = useState("");
-  const mic = useMicStream({ enabled: isYourTurn });
+  const mic = useMicStream({ enabled: props.connected && isYourTurn });
   const audio = useAudioSocket({
     gameId: phase.gameId,
     onMessage: (msg) => {
@@ -908,17 +933,17 @@ function InGameView(props: {
   });
 
   useEffect(() => {
-    if (isYourTurn) {
+    if (props.connected && isYourTurn) {
       audio.send({ type: "audio:start", gameId: phase.gameId });
     } else {
       audio.send({ type: "audio:stop", gameId: phase.gameId });
       setVoiceTranscript("");
     }
-  }, [audio, isYourTurn, phase.gameId]);
+  }, [audio, isYourTurn, phase.gameId, props.connected]);
 
   useVoiceRecorder({
     stream: mic.stream,
-    active: isYourTurn && mic.status === "ready" && audio.status === "open",
+    active: props.connected && isYourTurn && mic.status === "ready" && audio.status === "open",
     onChunk: audio.sendBinary,
   });
 
@@ -953,7 +978,12 @@ function InGameView(props: {
         </button>
       </header>
 
-      <YourTurnBanner isYourTurn={isYourTurn} color={phase.color} />
+      <ConnectionBanner
+        connected={props.connected}
+        opponentDisconnectedUntil={phase.opponentDisconnectedUntil}
+      />
+
+      <YourTurnBanner isYourTurn={isYourTurn} color={phase.color} disabled={isReconnecting} />
 
       <div className="grid gap-5 lg:grid-cols-[minmax(420px,720px)_22rem]">
         <div className="flex flex-col gap-3">
@@ -977,13 +1007,14 @@ function InGameView(props: {
             micStatus={mic.status}
             audioStatus={audio.status}
             transcript={voiceTranscript}
-            error={phase.lastError}
+            error={isReconnecting ? "Reconnecting to game server..." : phase.lastError}
             illegalCount={phase.illegalCount}
             onEnableMic={() => {
               void mic.request();
             }}
             onSubmitTranscript={(text) => {
               setVoiceTranscript(text);
+              if (!props.connected) return;
               audio.send({ type: "audio:transcript", gameId: phase.gameId, text });
             }}
           />
@@ -992,7 +1023,7 @@ function InGameView(props: {
             value={props.moveInput}
             onChange={props.onMoveInputChange}
             onSubmit={props.onSubmitMove}
-            disabled={!isYourTurn}
+            disabled={!props.connected || !isYourTurn}
             error={phase.lastError}
             illegalCount={phase.illegalCount}
           />
@@ -1011,21 +1042,64 @@ function InGameView(props: {
   );
 }
 
-function YourTurnBanner({ isYourTurn, color }: { isYourTurn: boolean; color: Color }) {
+function ConnectionBanner({
+  connected,
+  opponentDisconnectedUntil,
+}: {
+  connected: boolean;
+  opponentDisconnectedUntil: number | null;
+}) {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (connected && opponentDisconnectedUntil === null) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(interval);
+  }, [connected, opponentDisconnectedUntil]);
+
+  if (!connected) {
+    return (
+      <div className="rounded border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+        Reconnecting&hellip; you have about 10 seconds before the game is forfeited.
+      </div>
+    );
+  }
+
+  if (opponentDisconnectedUntil === null) return null;
+  const remainingSeconds = Math.max(0, Math.ceil((opponentDisconnectedUntil - now) / 1000));
+  return (
+    <div className="rounded border border-amber-500/40 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+      Opponent disconnected. You win if they do not reconnect in {remainingSeconds}s.
+    </div>
+  );
+}
+
+function YourTurnBanner({
+  isYourTurn,
+  color,
+  disabled,
+}: {
+  isYourTurn: boolean;
+  color: Color;
+  disabled: boolean;
+}) {
+  const active = isYourTurn && !disabled;
   return (
     <div
       className={
         "rounded px-5 py-4 text-center transition-all " +
-        (isYourTurn
+        (active
           ? "bg-[#7fa650] text-white shadow-md"
           : "bg-[#312e2b] text-[#cfc8bd]")
       }
     >
       <p className="text-xs font-semibold uppercase tracking-[0.28em] opacity-80">
-        {isYourTurn ? "Your turn" : "Opponent's turn"}
+        {disabled ? "Reconnecting" : isYourTurn ? "Your turn" : "Opponent's turn"}
       </p>
       <p className="mt-1 text-xl font-bold">
-        {isYourTurn
+        {disabled
+          ? "Moves are paused until the socket is back"
+          : isYourTurn
           ? `Speak a move for ${color}`
           : "Your mic is muted while you wait"}
       </p>

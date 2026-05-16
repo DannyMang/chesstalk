@@ -161,17 +161,101 @@ func (s *MongoStore) RatingFor(ctx context.Context, userID string, mode string) 
 	return row.Rating
 }
 
-func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor) error {
-	if s == nil {
-		return nil
-	}
+func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor) (game.GameDoc, error) {
 	doc := actor.Snapshot()
 	if doc.Result == nil || doc.Termination == nil || doc.EndedAt == nil {
-		return fmt.Errorf("game %s is not finished", doc.ID)
+		return doc, fmt.Errorf("game %s is not finished", doc.ID)
+	}
+	if s == nil {
+		ratedDoc, _ := rateFinishedGame(doc, fallbackRatingRow(doc.White), fallbackRatingRow(doc.Black))
+		return ratedDoc, nil
 	}
 	doc.ExpiresAt = doc.EndedAt.Add(49 * 24 * time.Hour)
-	_, err := s.db.Collection("games").InsertOne(ctx, doc)
+	whiteRating, err := s.ratingRowForPlayer(ctx, doc.White, doc.Mode)
+	if err != nil {
+		return doc, err
+	}
+	blackRating, err := s.ratingRowForPlayer(ctx, doc.Black, doc.Mode)
+	if err != nil {
+		return doc, err
+	}
+	var rated game.RatedGame
+	doc, rated = rateFinishedGame(doc, whiteRating, blackRating)
+	if err := s.persistRatingUpdates(ctx, doc, rated); err != nil {
+		return doc, err
+	}
+	_, err = s.db.Collection("games").InsertOne(ctx, doc)
+	return doc, err
+}
+
+func rateFinishedGame(doc game.GameDoc, whiteRating game.RatingDoc, blackRating game.RatingDoc) (game.GameDoc, game.RatedGame) {
+	if doc.Result == nil {
+		return doc, game.RatedGame{}
+	}
+	rated := game.RateGame(whiteRating, blackRating, *doc.Result)
+	doc.White.RatingAfter = floatPtr(rated.White.Rating)
+	doc.Black.RatingAfter = floatPtr(rated.Black.Rating)
+	return doc, rated
+}
+
+func (s *MongoStore) ratingRowForPlayer(ctx context.Context, player game.PlayerSnapshot, mode string) (game.RatingDoc, error) {
+	if !isPersistedUser(player.UserID) {
+		return fallbackRatingRow(player), nil
+	}
+	if err := s.EnsureRatingRow(ctx, player.UserID, mode); err != nil {
+		return game.RatingDoc{}, err
+	}
+	var row game.RatingDoc
+	if err := s.db.Collection("ratings").FindOne(ctx, bson.M{"userId": player.UserID, "mode": mode}).Decode(&row); err != nil {
+		return game.RatingDoc{}, err
+	}
+	return row, nil
+}
+
+func fallbackRatingRow(player game.PlayerSnapshot) game.RatingDoc {
+	return game.RatingDoc{
+		UserID: player.UserID,
+		Rating: player.RatingBefore,
+		RD:     game.StartingRD,
+	}
+}
+
+func (s *MongoStore) persistRatingUpdates(ctx context.Context, doc game.GameDoc, rated game.RatedGame) error {
+	if doc.White.RatingAfter != nil && isPersistedUser(doc.White.UserID) {
+		if err := s.updateRating(ctx, doc.White.UserID, doc.Mode, rated.White); err != nil {
+			return err
+		}
+	}
+	if doc.Black.RatingAfter != nil && isPersistedUser(doc.Black.UserID) {
+		if err := s.updateRating(ctx, doc.Black.UserID, doc.Mode, rated.Black); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *MongoStore) updateRating(ctx context.Context, userID string, mode string, rating game.RatingUpdate) error {
+	_, err := s.db.Collection("ratings").UpdateOne(
+		ctx,
+		bson.M{"userId": userID, "mode": mode},
+		bson.M{
+			"$set": bson.M{
+				"rating":    rating.Rating,
+				"rd":        rating.RD,
+				"updatedAt": time.Now(),
+			},
+			"$inc": bson.M{"games": 1},
+		},
+	)
 	return err
+}
+
+func isPersistedUser(userID string) bool {
+	return userID != "" && len(userID) >= 4 && userID[:4] != "bot:"
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
 }
 
 func defaultSettings() game.UserSettings {

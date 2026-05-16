@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /out/chesstalk-server ./cmd/chesstalk-s
 
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates stockfish
 RUN adduser -D -H chesstalk
 USER chesstalk
 WORKDIR /app

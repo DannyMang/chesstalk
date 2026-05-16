@@ -38,6 +38,7 @@ export const Termination = {
   Resignation: "resignation",
   Timeout: "timeout",
   IllegalStrikes: "illegal_strikes",
+  Disconnect: "disconnect",
   Stalemate: "draw_stalemate",
   ThreefoldRepetition: "draw_threefold",
   FiftyMoveRule: "draw_fifty",

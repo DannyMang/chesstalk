@@ -25,9 +25,9 @@ bun run dev:web      # in another
 
 Open <http://localhost:3000>.
 
-Production speech-to-text is still a TODO. For local testing, the in-game voice capsule includes a **test spoken move** input that sends text through the `/audio` path, runs the Go verbal move normalizer, and dispatches the parsed move.
+Live speech-to-text uses Deepgram streaming when `DEEPGRAM_API_KEY` is set. Without a key, the in-game voice capsule still includes a **test spoken move** input that sends text through the `/audio` path, runs the Go verbal move normalizer, and dispatches the parsed move.
 
-The Go backend is now the only server implementation. It supports guest games, Clerk JWKS verification, matchmaking, invites, clocks, legal-move validation, Mongo game persistence, and a simple legal-move bot for testing. Production hardening still needs Stockfish-backed bot moves, Deepgram streaming STT, and rating updates.
+The Go backend is now the only server implementation. It supports guest games, Clerk JWKS verification, matchmaking, invites, clocks, legal-move validation, Mongo game persistence, Deepgram streaming STT, and Stockfish-backed bot games. Production hardening still needs rating updates.
 
 ## Repository layout
 
@@ -47,7 +47,7 @@ See [docs/self-hosting.md](docs/self-hosting.md) for production deployment notes
 
 1. You hit "Play easy 5+0", join a matchmaking queue.
 2. When matched, both players' browsers open a WebSocket to the game server. The game server holds authoritative state.
-3. On your turn, your browser can capture mic audio and stream it to the server. The current rough draft also has a dev transcript box so you can type phrases like "knight to f3" and exercise the same parser/dispatcher path without Deepgram.
+3. On your turn, your browser can capture mic audio and stream WebM/Opus chunks to the server. With `DEEPGRAM_API_KEY`, the server proxies those chunks to Deepgram Nova-3 and forwards interim/final transcripts back through the voice capsule; the dev transcript box exercises the same parser/dispatcher path without live STT.
 4. Your opponent never hears your voice — they only see the parsed move appear.
 
 See [PLAN.md](PLAN.md) for full architecture, data model, and milestones.

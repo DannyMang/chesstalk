@@ -8,6 +8,7 @@ export type ClientGameMessage =
   | { type: "bot:start"; mode: Mode; timeControl: TimeControl; side?: Color; strength?: number }
   | { type: "invite:create"; mode: Mode; timeControl: TimeControl }
   | { type: "invite:join"; inviteId: string }
+  | { type: "game:resume"; gameId: string }
   | { type: "game:resign"; gameId: string }
   | { type: "game:offerDraw"; gameId: string }
   | { type: "game:acceptDraw"; gameId: string }
@@ -19,9 +20,10 @@ export type ServerGameMessage =
   | { type: "queue:waiting"; mode: Mode; timeControl: TimeControl; queueDepth: number }
   | { type: "invite:created"; inviteId: string; mode: Mode; timeControl: TimeControl }
   | { type: "game:start"; gameId: string; color: Color; opponent: OpponentInfo; mode: Mode; timeControl: TimeControl }
-  | { type: "game:state"; gameId: string; fen: string; turn: Color; whiteClockMs: number; blackClockMs: number; lastMove: MoveRecord | null }
+  | { type: "game:state"; gameId: string; fen: string; turn: Color; whiteClockMs: number; blackClockMs: number; lastMove: MoveRecord | null; moves?: MoveRecord[]; illegalCount?: Record<Color, number> }
   | { type: "move:confirmed"; gameId: string; move: MoveRecord; fen: string; turn: Color; whiteClockMs: number; blackClockMs: number }
   | { type: "move:rejected"; gameId: string; reason: string; illegalCount: number }
+  | { type: "opponent:disconnected"; gameId: string; color: Color; reconnectDeadlineMs: number; reconnectGraceMs: number }
   | { type: "game:end"; gameId: string; result: GameResult; termination: Termination; ratingDeltaSelf: number; ratingDeltaOpponent: number }
   | { type: "pong"; t: number; serverNow: number }
   | { type: "error"; code: string; message: string };

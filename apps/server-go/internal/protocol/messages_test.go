@@ -46,6 +46,16 @@ func TestValidateGameMessageTrimsMoveText(t *testing.T) {
 	}
 }
 
+func TestValidateGameMessageAcceptsGameResume(t *testing.T) {
+	msg, err := ValidateGameMessage([]byte(`{"type":"game:resume","gameId":"game_123"}`))
+	if err != nil {
+		t.Fatalf("expected game resume to validate: %v", err)
+	}
+	if msg.Type != "game:resume" || msg.GameID != "game_123" {
+		t.Fatalf("unexpected resume message: %+v", msg)
+	}
+}
+
 func TestValidateGameMessageRejectsOversizedPayload(t *testing.T) {
 	_, err := ValidateGameMessage([]byte(strings.Repeat("x", MaxGameJSONBytes+1)))
 	if err == nil {

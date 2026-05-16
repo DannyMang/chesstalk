@@ -136,7 +136,7 @@ func ValidateGameMessage(data []byte) (GameMessage, error) {
 			return GameMessage{}, errors.New("invalid invite ID")
 		}
 		return GameMessage{Type: msg.Type, InviteID: inviteID}, nil
-	case "game:resign", "game:offerDraw", "game:acceptDraw":
+	case "game:resume", "game:resign", "game:offerDraw", "game:acceptDraw":
 		var msg struct {
 			Type   string `json:"type"`
 			GameID string `json:"gameId"`

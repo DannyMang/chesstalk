@@ -17,6 +17,7 @@ export interface ConnectGameSocketOptions {
   getToken: () => Promise<string | null>;
   getGuestId: () => string;
   onStatusChange?: (status: GameSocketStatus) => void;
+  reconnectWindowMs?: number;
 }
 
 export function connectGameSocket(opts: ConnectGameSocketOptions): GameSocket {
@@ -24,7 +25,11 @@ export function connectGameSocket(opts: ConnectGameSocketOptions): GameSocket {
   let ws: WebSocket | null = null;
   let status: GameSocketStatus = "connecting";
   let closed = false;
+  let reconnectAttempt = 0;
+  let firstDisconnectAt: number | null = null;
+  let reconnectTimer: number | null = null;
   const sendQueue: string[] = [];
+  const reconnectWindowMs = opts.reconnectWindowMs ?? 10_000;
 
   const setStatus = (next: GameSocketStatus): void => {
     if (status === next) return;
@@ -40,7 +45,29 @@ export function connectGameSocket(opts: ConnectGameSocketOptions): GameSocket {
     }
   };
 
-  void (async () => {
+  const scheduleReconnect = (): void => {
+    if (closed) return;
+    const disconnectedAt = firstDisconnectAt ?? Date.now();
+    firstDisconnectAt = disconnectedAt;
+    const elapsed = Date.now() - disconnectedAt;
+    if (elapsed >= reconnectWindowMs) {
+      sendQueue.length = 0;
+      setStatus("closed");
+      return;
+    }
+    const baseDelay = Math.min(500 * 2 ** reconnectAttempt, 2_000);
+    const jitteredDelay = baseDelay * (0.5 + Math.random() * 0.5);
+    const remaining = reconnectWindowMs - elapsed;
+    const delay = Math.max(100, Math.min(jitteredDelay, remaining));
+    reconnectAttempt += 1;
+    setStatus("connecting");
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      void openSocket();
+    }, delay);
+  };
+
+  const openSocket = async (): Promise<void> => {
     let token: string | null = null;
     try {
       token = await opts.getToken();
@@ -57,6 +84,8 @@ export function connectGameSocket(opts: ConnectGameSocketOptions): GameSocket {
     ws = socket;
 
     socket.addEventListener("open", () => {
+      reconnectAttempt = 0;
+      firstDisconnectAt = null;
       setStatus("open");
       flushQueue();
     });
@@ -73,16 +102,24 @@ export function connectGameSocket(opts: ConnectGameSocketOptions): GameSocket {
     });
 
     socket.addEventListener("close", () => {
-      setStatus("closed");
+      if (ws === socket) ws = null;
+      if (closed) {
+        setStatus("closed");
+        return;
+      }
+      scheduleReconnect();
     });
 
     socket.addEventListener("error", () => {
       // Allow the close event to mark the socket as closed.
     });
-  })();
+  };
+
+  void openSocket();
 
   return {
     send(msg) {
+      if (status === "closed") return;
       const payload = JSON.stringify(msg);
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(payload);
@@ -92,6 +129,10 @@ export function connectGameSocket(opts: ConnectGameSocketOptions): GameSocket {
     },
     close() {
       closed = true;
+      if (reconnectTimer !== null) {
+        window.clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close();
       }

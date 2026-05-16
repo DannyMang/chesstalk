@@ -16,6 +16,7 @@ Copy `.env.example` to `.env.local` (local) or set the same keys in Vercel/Railw
 - `NEXT_PUBLIC_GAME_SERVER_URL` — public `wss://...` URL of the Railway game server, set in Vercel.
 - `MONGODB_URI` — Mongo connection string, set in both Vercel and Railway.
 - `DEEPGRAM_API_KEY` — optional locally, required in Railway before production STT.
+- `STOCKFISH_PATH` — optional path to the Stockfish executable for bot games; defaults to `stockfish`.
 - `ALLOWED_ORIGINS` — comma-separated browser origins allowed to open game/audio WebSockets, set in Railway.
 - `CLERK_JWKS_URL` — Clerk JWKS endpoint for verifying WebSocket tokens in Railway.
 - `CLERK_ISSUER` — expected Clerk issuer. Recommended for production.
@@ -35,7 +36,7 @@ Verify in MongoDB Atlas or with `mongosh` after first boot.
 
 ## Railway
 
-The root `Dockerfile` builds `apps/server-go` and `railway.json` points Railway at `/health`. Railway provides `$PORT`; the Go server uses it automatically, falling back to `GAME_SERVER_PORT` for local development.
+The root `Dockerfile` builds `apps/server-go`, installs Stockfish for bot games, and `railway.json` points Railway at `/health`. Railway provides `$PORT`; the Go server uses it automatically, falling back to `GAME_SERVER_PORT` for local development.
 
 After deploy, run:
 

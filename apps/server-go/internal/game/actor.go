@@ -42,6 +42,7 @@ type Actor struct {
 	illegalCount map[string]int
 	drawOfferBy  string
 	connections  map[string]Sender
+	disconnects  map[string]time.Time
 
 	endListeners  []EndListener
 	moveListeners []MoveListener
@@ -85,6 +86,7 @@ func NewActor(params NewActorParams) *Actor {
 		status:       "active",
 		illegalCount: map[string]int{ColorWhite: 0, ColorBlack: 0},
 		connections:  make(map[string]Sender),
+		disconnects:  make(map[string]time.Time),
 	}
 }
 
@@ -104,6 +106,23 @@ func (a *Actor) UserColor(userID string) string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.userColorLocked(userID)
+}
+
+func (a *Actor) OpponentInfoForColor(color string) OpponentInfo {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if color == ColorWhite {
+		return OpponentInfo{
+			UserID:   a.Black.UserID,
+			Username: a.Black.Username,
+			Rating:   a.Black.RatingBefore,
+		}
+	}
+	return OpponentInfo{
+		UserID:   a.White.UserID,
+		Username: a.White.Username,
+		Rating:   a.White.RatingBefore,
+	}
 }
 
 func (a *Actor) userColorLocked(userID string) string {
@@ -128,6 +147,12 @@ func (a *Actor) FEN() string {
 	return a.chessGame.FEN()
 }
 
+func (a *Actor) EngineFEN() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.chessGame.Position().String()
+}
+
 func (a *Actor) turnLocked() string {
 	if a.chessGame.Position().Turn() == chess.White {
 		return ColorWhite
@@ -139,14 +164,55 @@ func (a *Actor) Attach(color string, sender Sender) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.connections[color] = sender
+	delete(a.disconnects, color)
 }
 
-func (a *Actor) Detach(color string, sender Sender) {
+func (a *Actor) Detach(color string, sender Sender) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.connections[color] == sender {
 		delete(a.connections, color)
+		return true
 	}
+	return false
+}
+
+func (a *Actor) MarkDisconnected(color string, now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status != "active" || a.connections[color] != nil {
+		return false
+	}
+	a.disconnects[color] = now
+	return true
+}
+
+func (a *Actor) IsDisconnectedSince(color string, since time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	disconnectedAt, ok := a.disconnects[color]
+	return a.status == "active" && ok && disconnectedAt.Equal(since) && a.connections[color] == nil
+}
+
+func (a *Actor) ForfeitDisconnected(color string, disconnectedAt time.Time, now time.Time) bool {
+	a.mu.Lock()
+	if a.status != "active" {
+		a.mu.Unlock()
+		return false
+	}
+	currentDisconnectedAt, ok := a.disconnects[color]
+	if !ok || !currentDisconnectedAt.Equal(disconnectedAt) || a.connections[color] != nil {
+		a.mu.Unlock()
+		return false
+	}
+	termination := TerminationDisconnect
+	if len(a.moves) == 0 {
+		termination = TerminationResignation
+	}
+	listeners := a.endGameLocked(WinnerFromColor(OtherColor(color)), termination, now)
+	a.mu.Unlock()
+	a.emitEnd(listeners)
+	return true
 }
 
 func (a *Actor) Broadcast(value any) {
@@ -196,6 +262,8 @@ func (a *Actor) State(now time.Time) map[string]any {
 	if len(a.moves) > 0 {
 		lastMove = a.moves[len(a.moves)-1]
 	}
+	moves := append([]MoveRecord(nil), a.moves...)
+	illegal := map[string]int{ColorWhite: a.illegalCount[ColorWhite], ColorBlack: a.illegalCount[ColorBlack]}
 	return map[string]any{
 		"type":         "game:state",
 		"gameId":       a.ID,
@@ -204,6 +272,8 @@ func (a *Actor) State(now time.Time) map[string]any {
 		"whiteClockMs": snapshot.WhiteClockMS,
 		"blackClockMs": snapshot.BlackClockMS,
 		"lastMove":     lastMove,
+		"moves":        moves,
+		"illegalCount": illegal,
 	}
 }
 
@@ -308,6 +378,21 @@ func (a *Actor) RandomLegalMoveSAN() (string, bool) {
 	}
 	move := moves[idx]
 	return chess.AlgebraicNotation{}.Encode(a.chessGame.Position(), move), true
+}
+
+func (a *Actor) LegalMoveKeyterms() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	moves := a.chessGame.ValidMoves()
+	keyterms := make([]string, 0, len(moves)*2)
+	for _, move := range moves {
+		keyterms = append(
+			keyterms,
+			chess.AlgebraicNotation{}.Encode(a.chessGame.Position(), move),
+			chess.UCINotation{}.Encode(a.chessGame.Position(), move),
+		)
+	}
+	return dedupe(keyterms)
 }
 
 func (a *Actor) Resign(userID string, now time.Time) bool {

@@ -1,6 +1,9 @@
 package game
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 const (
 	ModeEasy      = "easy"
@@ -17,6 +20,7 @@ const (
 	TerminationResignation          = "resignation"
 	TerminationTimeout              = "timeout"
 	TerminationIllegalStrikes       = "illegal_strikes"
+	TerminationDisconnect           = "disconnect"
 	TerminationStalemate            = "draw_stalemate"
 	TerminationThreefoldRepetition  = "draw_threefold"
 	TerminationFiftyMoveRule        = "draw_fifty"
@@ -96,6 +100,16 @@ type RatingDoc struct {
 	UpdatedAt time.Time `bson:"updatedAt"`
 }
 
+type RatingUpdate struct {
+	Rating float64
+	RD     float64
+}
+
+type RatedGame struct {
+	White RatingUpdate
+	Black RatingUpdate
+}
+
 func OtherColor(color string) string {
 	if color == ColorWhite {
 		return ColorBlack
@@ -109,3 +123,36 @@ func WinnerFromColor(color string) string {
 	}
 	return ResultBlack
 }
+
+func RateGame(white RatingDoc, black RatingDoc, result string) RatedGame {
+	whiteOutcome := 0.5
+	switch result {
+	case ResultWhite:
+		whiteOutcome = 1
+	case ResultBlack:
+		whiteOutcome = 0
+	}
+	return RatedGame{
+		White: updateRating(white.Rating, white.RD, black.Rating, black.RD, whiteOutcome),
+		Black: updateRating(black.Rating, black.RD, white.Rating, white.RD, 1-whiteOutcome),
+	}
+}
+
+func updateRating(rating float64, rd float64, opponentRating float64, opponentRD float64, outcome float64) RatingUpdate {
+	gOpp := glickoG(opponentRD)
+	expected := 1 / (1 + math.Pow(10, (-gOpp*(rating-opponentRating))/400))
+	dSquared := 1 / (glickoQ * glickoQ * gOpp * gOpp * expected * (1 - expected))
+	denom := 1/(rd*rd) + 1/dSquared
+	newRD := math.Sqrt(1 / denom)
+	newRating := rating + glickoQ*(newRD*newRD)*gOpp*(outcome-expected)
+	return RatingUpdate{
+		Rating: math.Round(newRating),
+		RD:     math.Max(30, math.Round(newRD)),
+	}
+}
+
+func glickoG(rd float64) float64 {
+	return 1 / math.Sqrt(1+(3*glickoQ*glickoQ*rd*rd)/(math.Pi*math.Pi))
+}
+
+const glickoQ = math.Ln10 / 400
