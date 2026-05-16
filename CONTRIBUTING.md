@@ -9,15 +9,15 @@ See the [README](README.md). Local dev runs against a Docker Mongo and Clerk's f
 ## Project structure
 
 - `apps/web` — Next.js 15 app (App Router).
-- `apps/server` — Fastify + ws game server.
+- `apps/server-go` — Go WebSocket game server.
 - `packages/shared` — types, enums, and game logic shared across apps.
 
 Run `bun install` once at the repo root; Bun workspaces link everything.
 
 ## Conventions
 
-- TypeScript strict mode everywhere.
-- ESM only (no CommonJS).
+- TypeScript strict mode for the web/packages.
+- Go code is formatted with `gofmt` and tested with `go test ./...`.
 - Format with the default Bun/Biome settings (no Prettier).
 - Don't add comments that just re-describe what the code does.
 

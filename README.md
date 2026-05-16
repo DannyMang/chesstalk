@@ -10,7 +10,7 @@ Two modes:
 
 ## Quick start (local dev)
 
-Requires [Bun](https://bun.sh) and Docker.
+Requires [Bun](https://bun.sh), Go 1.22+, and Docker.
 
 ```sh
 git clone https://github.com/YOUR-ORG/chesstalk.git
@@ -19,20 +19,22 @@ cp .env.example .env.local
 # fill in CLERK keys (free tier at https://dashboard.clerk.com)
 bun install
 docker compose up -d mongo
-bun run dev:server   # in one terminal
+bun run dev:server   # Go WebSocket server in one terminal
 bun run dev:web      # in another
 ```
 
 Open <http://localhost:3000>.
 
-Real speech-to-text is still a TODO. For local testing, the in-game voice capsule includes a **test spoken move** input that sends text through the `/audio` path, runs the verbal move parser, and dispatches the parsed move.
+Production speech-to-text is still a TODO. For local testing, the in-game voice capsule includes a **test spoken move** input that sends text through the `/audio` path, runs the Go verbal move normalizer, and dispatches the parsed move.
+
+The Go backend is now the only server implementation. It supports guest games, Clerk JWKS verification, matchmaking, invites, clocks, legal-move validation, Mongo game persistence, and a simple legal-move bot for testing. Production hardening still needs Stockfish-backed bot moves, Deepgram streaming STT, and rating updates.
 
 ## Repository layout
 
 ```
 apps/
   web/        Next.js 15 app — UI, auth, profile, replay
-  server/     Fastify + ws — game state, matchmaking, STT proxy
+  server-go/  Go WebSocket server — game state, matchmaking, STT proxy
 packages/
   shared/     Types, enums, game logic shared between apps
 docs/

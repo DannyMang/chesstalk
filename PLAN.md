@@ -10,14 +10,14 @@ A verbal chess web app. Players speak their moves out loud; the server validates
 |---|---|---|
 | Transport between players | **WebSockets, not WebRTC** | Opponents must not hear each other, so peer audio is unwanted. WebRTC buys nothing here. |
 | Speech-to-Text | **Deepgram Nova-3 streaming** (server-side), Web Speech API as fallback | Only vendor with strong per-turn vocabulary biasing ("keyterm prompting") — the single biggest accuracy lever for "knight vs night", "Nf3 vs enough three". Sub-300 ms partials, ~$0.0043/min. |
-| Move parsing | **chess-nlp** (NL→SAN) + **chess.js** (legality) | chess-nlp handles "knight to e4", "queen takes pawn", "castles kingside". chess.js validates and tracks state. Note: chess-nlp is unmaintained — plan to vendor + extend it (small library, ~1k LOC). |
+| Move parsing | Go voice normalizer + **notnil/chess** legality | The Go server normalizes common spoken move forms, then validates against the authoritative game state. |
 | Board UI | **react-chessboard 5.x** | Active, React-native, MIT, supports last-move highlight + disabling drag (needed for "voice-only"). chessground is GPL-3.0; only use if we accept GPL for the whole app. |
 | Engine | **Stockfish 18 (WASM)** — v2 feature only | Not needed for PvP. Used later for blunder analysis in match replay, optional hint feature, and a future bot mode. |
 | Rating | **Glicko-1**, start at **1200** | Pure ELO converges too slowly; Glicko-2's volatility math needs more games than we'll have. Glicko-1 = right complexity for our scale. 1200 gives headroom in both directions and converges faster than 800 with a thin user base. |
 | Matchmaking | Per-pool expanding-window queue (±50 every 10 s, cap ±400) | 4 pools = mode × time control. Pools will be thin — offer opt-in time-control expansion + a bot fallback after 60 s. |
 | Database | **MongoDB Atlas** (per spec) | Schema flexibility for match documents + native TTL indexes for the 7-week eviction. |
 | Auth | **Clerk** (per spec) | Stores Clerk `userId` as the foreign key everywhere. |
-| Real-time server | **Fastify + `ws`** on **Fly.io** (single small VM) | Next.js/Vercel can't hold WebSockets. One actor (game object) per game in-memory. |
+| Real-time server | **Go WebSocket server** on **Railway** | Vercel is ideal for the web app, while Railway can run the long-lived WebSocket process. Goroutines and mutex-protected game actors fit the launch concurrency model. |
 | Voice privacy | **No peer audio.** STT happens server-side; opponent gets parsed text (+ optional TTS) | Hard requirement from spec. Also simplifies anti-cheat (server sees the audio path). |
 | OSS split | Public app monorepo + private infra repo | Mirrors Lichess (`lila` public, ops private). |
 
@@ -38,13 +38,13 @@ A verbal chess web app. Players speak their moves out loud; the server validates
              │                  │                    │
    ┌─────────▼────────┐  ┌──────▼──────────┐  ┌──────▼──────────────┐
    │ Next.js API      │  │ Game server     │  │ STT worker          │
-   │ (Vercel)         │  │ (Fly: Fastify   │  │ (Fly: Node)         │
-   │  - profile       │  │  + ws)          │  │  - holds Deepgram   │
+   │ (Vercel)         │  │ (Railway: Go WS)│  │ (Railway worker)    │
+   │  - profile       │  │                 │  │  - holds Deepgram   │
    │  - history list  │  │  - matchmaking  │  │    socket per game  │
    │  - replay fetch  │  │  - per-game     │  │  - legal-move       │
    │  - leaderboard   │  │    state        │  │    keyterms each    │
-   │                  │  │  - chess.js     │  │    turn             │
-   │                  │  │  - clocks       │  │  - chess-nlp parse  │
+   │                  │  │  - notnil/chess │  │    turn             │
+   │                  │  │  - clocks       │  │  - voice parser     │
    └────────┬─────────┘  │  - ratings      │  └──────────┬──────────┘
             │            └────────┬────────┘             │
             │                     │  (in-proc or         │
@@ -57,7 +57,7 @@ A verbal chess web app. Players speak their moves out loud; the server validates
    └────────────────────────────────────────────────────┘
 ```
 
-The **STT worker** and **Game server** can be the same Node process for v1 (simpler). Split later if STT load grows.
+The **STT worker** and **Game server** can be the same Go process for v1 (simpler). Split later if STT load grows.
 
 ---
 
@@ -78,7 +78,7 @@ Per turn:
 6. On `is_final` + endpointing, worker runs:
    - **Normalization** (lowercase, "night"→"knight", "be"→"b", "ate"→"8", strip filler).
    - **chess-nlp** `textToSan(normalized)` → candidate SAN.
-   - **chess.js** validates legality.
+   - **notnil/chess** validates legality.
 7. **If valid**: emit `move-confirmed` to game server → updates state, broadcasts to both players, swaps turn, resets clock. Opponent's UI shows the move as text and (optionally) speaks it via `SpeechSynthesis`.
 8. **If invalid / unparseable**: increment `illegalCount[playerId]`. Reply to player A: "Couldn't parse — try again" or "Illegal move, 1 of 3". On 3rd strike → player A loses, game ends, broadcast result.
 
@@ -106,7 +106,7 @@ The capsule component lives in `/app/components/voice-capsule.tsx` and is the ce
 
 ### Fallback
 
-- Detect Firefox or Web Speech availability. If Deepgram is down or user opts out, use browser-side `SpeechRecognition` with the same normalization → chess-nlp → chess.js layer. Worse accuracy, no biasing.
+- Detect Firefox or Web Speech availability. If Deepgram is down or user opts out, use browser-side `SpeechRecognition` with the same normalization → Go voice parser → notnil/chess layer. Worse accuracy, no biasing.
 
 ---
 
@@ -142,7 +142,7 @@ games  // TTL 7 weeks
   black: { userId, ratingBefore, ratingAfter }
   result: "white" | "black" | "draw" | null
   termination: "checkmate" | "resignation" | "timeout" | "illegal_strikes" | "draw_*"
-  pgn: string                                     // standard PGN, replayable by chess.js
+  pgn: string                                     // standard PGN, replayable by chess libraries
   moves: [                                        // for replay UI
     {
       san: string,                                // "Nf3"
@@ -207,7 +207,7 @@ No external matchmaking lib. ~80 LOC. Revisit at 10k+ DAU.
 2. **Match found** — both clients receive `game-start` with `gameId`, color, opponent username/rating.
 3. **Pre-game** — both clients call `getUserMedia` and join the game WS room. Server starts white's clock.
 4. **Turn cycle** — voice pipeline (Section 3). On every move: server updates state, persists incremental move to MongoDB, broadcasts to both.
-5. **End conditions** — checkmate / stalemate / draw (chess.js detects) / timeout (server timer) / resignation (button: "say 'I resign' or click") / 3 illegal strikes.
+5. **End conditions** — checkmate / stalemate / draw (notnil/chess detects) / timeout (server timer) / resignation (button: "say 'I resign' or click") / 3 illegal strikes.
 6. **Post-game** — show result, rating delta, link to replay. Both `ratings` rows updated. `games` doc finalized with `expiresAt`.
 
 ### Blindfold mode UI
@@ -219,7 +219,7 @@ No external matchmaking lib. ~80 LOC. Revisit at 10k+ DAU.
 ### Match replay
 
 - Fetch `games` doc by `_id` (auth: only if user was a player).
-- Reconstruct position by stepping through `moves[]` and applying to a fresh `chess.js` instance.
+- Reconstruct position by stepping through `moves[]` and applying to a fresh chess engine instance.
 - UI: chessboard + forward/back buttons + move list (chess.com style). Highlight last move.
 - "Show what I said" toggle reveals the `raw` transcript per move.
 
@@ -242,8 +242,8 @@ Two repos:
 
 ### `chesstalk-infra` (private)
 
-- Terraform/Pulumi: Atlas cluster, Fly apps, DNS, Cloudflare
-- Production env files (encrypted with SOPS or stored only in Fly/Vercel dashboards)
+- Terraform/Pulumi: Atlas cluster, Railway service, Vercel project, DNS, Cloudflare
+- Production env files (encrypted with SOPS or stored only in Railway/Vercel dashboards)
 - Runbooks, on-call docs
 - Anti-cheat thresholds, abuse-response procedures (publishing these = publishing the bypass)
 
@@ -251,7 +251,7 @@ Two repos:
 
 - `.env.local` gitignored.
 - Local dev: dummy keys work for everything except STT — provide a Web-Speech-API-only fallback so contributors don't need a Deepgram key.
-- Production secrets live in Vercel + Fly env stores. Never in either repo.
+- Production secrets live in Vercel + Railway env stores. Never in either repo.
 
 ---
 
@@ -262,13 +262,13 @@ Two repos:
 | Web framework | Next.js 15 (App Router) | MIT |
 | Auth | Clerk | proprietary SaaS |
 | Database | MongoDB Atlas | SSPL (server) / various drivers |
-| Real-time server | Fastify + `ws` on Fly.io | MIT |
+| Real-time server | Go WebSocket server on Railway | BSD-style stdlib + Gorilla WebSocket |
 | Board UI | react-chessboard 5.x | MIT |
-| Game logic | chess.js 1.4.x | BSD-2-Clause |
+| Game logic | notnil/chess | MIT |
 | Move NL parser | chess-nlp (vendored + extended) | MIT |
 | Speech-to-Text | Deepgram Nova-3 + Web Speech API fallback | SaaS / browser-native |
 | Future engine | Stockfish 18 (WASM) | GPL-3.0 (load only as analysis; isolate behind API to keep main app license clean) |
-| Hosting | Vercel (web) + Fly.io (game/STT server) + MongoDB Atlas | — |
+| Hosting | Vercel (web) + Railway (game/STT server) + MongoDB Atlas | — |
 | CI | GitHub Actions | — |
 
 ---
@@ -280,13 +280,13 @@ Two repos:
 - Public/private repo structure, `.env.example`, README, local Docker compose.
 
 ### M2 — Single-player vs self, no voice (week 2)
-- Game server (Fastify + ws), one game between two browser tabs.
-- chess.js integration, react-chessboard, clocks, move-by-move broadcast.
+- Game server (Go + WebSockets), one game between two browser tabs.
+- notnil/chess integration, react-chessboard, clocks, move-by-move broadcast.
 - `games` doc persisted, replay UI works.
 
 ### M3 — Voice in easy mode (week 3)
 - Mic capture, push-to-server audio WS, Deepgram integration, keyterm prompting per turn.
-- chess-nlp parsing + normalization + chess.js validation.
+- Go voice parsing + normalization + notnil/chess validation.
 - 3-strikes illegal move rule.
 - **Voice capsule component**: live waveform (Web Audio `AnalyserNode` + canvas) + live interim transcript + turn-state colors.
 - Whole-screen "your turn" affordance (board accent, opponent dim, clock pulse).

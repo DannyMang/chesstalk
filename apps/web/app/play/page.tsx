@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Mode,
   TIME_CONTROLS,
@@ -140,6 +140,22 @@ function buildInviteUrl(inviteId: string): string {
 }
 
 export default function PlayPage() {
+  return (
+    <Suspense fallback={<PlayPageFallback />}>
+      <PlayClient />
+    </Suspense>
+  );
+}
+
+function PlayPageFallback() {
+  return (
+    <section className="rounded bg-[#262421] p-8 text-center text-[#9b948a]">
+      Loading play screen...
+    </section>
+  );
+}
+
+function PlayClient() {
   const searchParams = useSearchParams();
   const inviteId = searchParams.get("invite")?.trim() ?? "";
   const hasJoinedInviteRef = useRef(false);

@@ -5,15 +5,19 @@
   "description": "Verbal chess. Speak your moves out loud.",
   "license": "AGPL-3.0-or-later",
   "workspaces": [
-    "apps/*",
+    "apps/web",
     "packages/*"
   ],
   "scripts": {
     "dev:web": "cd apps/web && bun run dev",
-    "dev:server": "cd apps/server && bun run dev",
+    "dev:server": "cd apps/server-go && go run ./cmd/chesstalk-server",
     "dev:mongo": "docker compose up -d mongo",
-    "typecheck": "cd packages/shared && bun run typecheck && cd ../voice-parser && bun run typecheck && cd ../../apps/server && bun run typecheck && cd ../web && bun run typecheck",
-    "test": "cd packages/voice-parser && bun run test"
+    "build:web": "cd apps/web && bun run build",
+    "vercel-build": "cd apps/web && bun run build",
+    "smoke:health": "scripts/smoke-health.sh",
+    "smoke:server": "bun ./scripts/smoke-server.ts",
+    "typecheck": "cd packages/shared && bun run typecheck && cd ../voice-parser && bun run typecheck && cd ../../apps/web && bun run typecheck",
+    "test": "cd packages/voice-parser && bun run test && cd ../../apps/server-go && go test ./..."
   },
   "devDependencies": {
     "typescript": "^5.6.0",
