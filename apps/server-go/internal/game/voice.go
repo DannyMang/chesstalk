@@ -27,7 +27,7 @@ var fileLexicon = map[string]chess.File{
 	"a": chess.FileA, "ay": chess.FileA, "alpha": chess.FileA,
 	"b": chess.FileB, "be": chess.FileB, "bee": chess.FileB, "bravo": chess.FileB,
 	"c": chess.FileC, "see": chess.FileC, "sea": chess.FileC, "charlie": chess.FileC,
-	"d": chess.FileD, "dee": chess.FileD, "delta": chess.FileD,
+	"d": chess.FileD, "dee": chess.FileD, "delta": chess.FileD, "t": chess.FileD, "tee": chess.FileD, "tea": chess.FileD,
 	"e": chess.FileE, "ee": chess.FileE, "echo": chess.FileE,
 	"f": chess.FileF, "ef": chess.FileF, "eff": chess.FileF, "foxtrot": chess.FileF,
 	"g": chess.FileG, "gee": chess.FileG, "golf": chess.FileG,

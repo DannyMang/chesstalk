@@ -37,6 +37,8 @@ func TestProposeSpokenMoveMatchesLegalMoves(t *testing.T) {
 		{name: "pawn square", raw: "e4", want: "e4"},
 		{name: "spoken number", raw: "e four", want: "e4"},
 		{name: "pawn phrase", raw: "pawn to e four", want: "e4"},
+		{name: "d file heard as t", raw: "t four", want: "d4"},
+		{name: "d file heard as tee", raw: "pawn to tee four", want: "d4"},
 		{name: "piece phrase", raw: "knight to f three", want: "Nf3"},
 		{name: "piece homophone", raw: "night to f three", want: "Nf3"},
 		{name: "piece alias", raw: "horse to f three", want: "Nf3"},

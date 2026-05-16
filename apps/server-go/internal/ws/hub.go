@@ -419,12 +419,25 @@ func (c *client) handleTranscript(msg protocol.AudioMessage) {
 				"message":    result.Reason,
 				"candidates": result.CandidateLabels,
 			})
+			c.restartSTTStream(msg.GameID)
 			return
 		}
 		c.sendJSON(map[string]any{"type": "stt:error", "gameId": msg.GameID, "message": result.Reason})
+		c.restartSTTStream(msg.GameID)
 		return
 	}
 	c.confirmSpokenMove(actor, msg.GameID, msg.Text, result)
+}
+
+func (c *client) restartSTTStream(gameID string) {
+	c.stopSTTStream()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		if !c.ensureCanSpeak(gameID) {
+			return
+		}
+		c.handleAudioStart(protocol.AudioMessage{Type: "audio:start", GameID: gameID})
+	}()
 }
 
 func (c *client) confirmSpokenMove(actor *game.Actor, gameID string, text string, result game.MoveResult) {
