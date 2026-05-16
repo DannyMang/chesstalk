@@ -5,6 +5,7 @@ import {
   gamesCollection,
   getDb,
   getInternalUserIdForClerkUserId,
+  getUsernamesById,
 } from "../../../lib/db.ts";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +42,10 @@ export async function GET(): Promise<NextResponse> {
     .sort({ endedAt: -1 })
     .limit(50)
     .toArray();
+  const opponentIds = docs.map((doc) =>
+    doc.white.userId === internalUserId ? doc.black.userId : doc.white.userId,
+  );
+  const usernamesById = await getUsernamesById(db, opponentIds);
 
   const rows = docs.map((doc): GameHistoryRow => {
     const yourColor: "white" | "black" =
@@ -50,7 +55,7 @@ export async function GET(): Promise<NextResponse> {
       id: doc._id,
       mode: doc.mode,
       yourColor,
-      opponentUsername: opponent.username,
+      opponentUsername: usernamesById.get(opponent.userId) ?? opponent.username,
       result: doc.result,
       endedAt: doc.endedAt ? new Date(doc.endedAt).toISOString() : null,
     };
