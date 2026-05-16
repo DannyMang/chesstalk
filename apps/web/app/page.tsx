@@ -36,6 +36,17 @@ function resultLabel(result: string | null, yourColor: "white" | "black"): strin
   return result === yourColor ? "Win" : "Loss";
 }
 
+function resultBadgeClass(result: string | null, yourColor: "white" | "black"): string {
+  const label = resultLabel(result, yourColor);
+  if (label === "Win") {
+    return "border-[#9fca6b]/40 bg-[#3c4a2e] text-[#d4f0aa]";
+  }
+  if (label === "Loss") {
+    return "border-[#b58863]/50 bg-[#3a2f28] text-[#f0d9b5]";
+  }
+  return "border-[#4a4640] bg-[#3c3934] text-[#cfc8bd]";
+}
+
 export default async function HomePage() {
   const user = await currentUser();
   if (user) {
@@ -144,7 +155,9 @@ export default async function HomePage() {
                             {game._id.slice(0, 8)}
                           </span>
                         </span>
-                        <span className="rounded bg-[#3c3934] px-2 py-1 text-xs">
+                        <span
+                          className={`rounded border px-2 py-1 text-xs ${resultBadgeClass(game.result, yourColor)}`}
+                        >
                           {resultLabel(game.result, yourColor)}
                         </span>
                       </Link>

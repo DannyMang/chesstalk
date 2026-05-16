@@ -782,6 +782,17 @@ function resultText(result: GameResult | null, yourColor: Color): string {
   return result === yourColor ? "Win" : "Loss";
 }
 
+function resultBadgeClass(result: GameResult | null, yourColor: Color): string {
+  const outcome = resultText(result, yourColor);
+  if (outcome === "Win") {
+    return "border-[#9fca6b]/40 bg-[#3c4a2e] text-[#d4f0aa]";
+  }
+  if (outcome === "Loss") {
+    return "border-[#b58863]/50 bg-[#3a2f28] text-[#f0d9b5]";
+  }
+  return "border-[#4a4640] bg-[#262421] text-[#cfc8bd]";
+}
+
 function PlayHistoryPanel() {
   const [rows, setRows] = useState<HistoryApiRow[]>([]);
   const [state, setState] = useState<"loading" | "guest" | "ready">("loading");
@@ -846,7 +857,9 @@ function PlayHistoryPanel() {
             >
               <div className="flex items-center justify-between gap-3">
                 <span className="font-semibold">{row.opponentUsername}</span>
-                <span className="rounded bg-[#262421] px-2 py-1 text-xs">
+                <span
+                  className={`rounded border px-2 py-1 text-xs ${resultBadgeClass(row.result, row.yourColor)}`}
+                >
                   {resultText(row.result, row.yourColor)}
                 </span>
               </div>
@@ -1208,23 +1221,20 @@ function EndedView(props: {
 }) {
   const outcome = formatResult(props.result, props.yourColor);
   const deltaSign = props.ratingDeltaSelf > 0 ? "+" : "";
+  const cardClass =
+    outcome === "Win"
+      ? "border-[#9fca6b]/50 bg-[#3c4a2e] text-[#f5f3ef]"
+      : outcome === "Loss"
+        ? "border-[#b58863]/60 bg-[#3a2f28] text-[#f5f3ef]"
+        : "border-[#4a4640] bg-[#262421] text-[#f5f3ef]";
   return (
     <section className="mx-auto flex max-w-md flex-col items-center gap-6 py-16 text-center">
-      <div
-        className={
-          "w-full rounded-xl border p-8 " +
-          (outcome === "Win"
-            ? "border-emerald-300 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/40"
-            : outcome === "Loss"
-              ? "border-red-300 bg-red-50 dark:border-red-900 dark:bg-red-950/40"
-              : "border-neutral-300 bg-neutral-50 dark:border-neutral-700 dark:bg-neutral-900")
-        }
-      >
-        <p className="text-xs uppercase tracking-wider text-neutral-500">
+      <div className={`w-full rounded-xl border p-8 shadow-xl shadow-black/30 ${cardClass}`}>
+        <p className="text-xs uppercase tracking-wider text-[#cfc8bd]">
           {describeTermination(props.termination)}
         </p>
         <h1 className="mt-2 text-4xl font-bold">{outcome}</h1>
-        <p className="mt-2 font-mono text-sm text-neutral-600 dark:text-neutral-400">
+        <p className="mt-2 font-mono text-sm text-[#cfc8bd]">
           Rating {deltaSign}
           {props.ratingDeltaSelf}
         </p>
@@ -1233,13 +1243,13 @@ function EndedView(props: {
         <button
           type="button"
           onClick={props.onPlayAgain}
-          className="rounded-md bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+          className="rounded-md bg-[#7fa650] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#8fbd5f]"
         >
           Play again
         </button>
         <Link
           href={`/game/${props.gameId}`}
-          className="rounded-md border border-neutral-300 px-5 py-2.5 text-sm hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+          className="rounded-md border border-[#4a4640] px-5 py-2.5 text-sm text-[#cfc8bd] hover:bg-[#2f2d29] hover:text-white"
         >
           Replay this game
         </Link>

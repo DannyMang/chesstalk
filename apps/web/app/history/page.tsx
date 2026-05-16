@@ -19,6 +19,16 @@ function outcome(
   return result === yourColor ? "W" : "L";
 }
 
+function outcomeBadgeClass(res: Outcome): string {
+  if (res === "W") {
+    return "border-[#9fca6b]/40 bg-[#3c4a2e] text-[#d4f0aa]";
+  }
+  if (res === "L") {
+    return "border-[#b58863]/50 bg-[#3a2f28] text-[#f0d9b5]";
+  }
+  return "border-[#4a4640] bg-[#3c3934] text-[#cfc8bd]";
+}
+
 function modeLabel(mode: "easy" | "blindfold"): string {
   return mode === "easy" ? "Easy" : "Blindfold";
 }
@@ -112,16 +122,7 @@ export default async function HistoryPage() {
                     <td className="px-4 py-3">{modeLabel(doc.mode)}</td>
                     <td className="px-4 py-3 capitalize">{yourColor}</td>
                     <td className="px-4 py-3">
-                      <span
-                        className={
-                          "inline-block w-6 rounded text-center font-mono font-semibold " +
-                          (res === "W"
-                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200"
-                            : res === "L"
-                              ? "bg-red-100 text-red-800 dark:bg-red-950/60 dark:text-red-200"
-                              : "bg-neutral-100 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300")
-                        }
-                      >
+                      <span className={`inline-block w-6 rounded border text-center font-mono font-semibold ${outcomeBadgeClass(res)}`}>
                         {res}
                       </span>
                     </td>
