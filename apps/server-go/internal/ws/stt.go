@@ -233,7 +233,7 @@ func (s *STTStream) readLoop(onTranscript func(STTTranscript)) {
 			}
 			onTranscript(STTTranscript{
 				Text:  text,
-				Final: msg.SpeechFinal || (msg.IsFinal && msg.FromFinalize),
+				Final: msg.SpeechFinal || msg.IsFinal,
 			})
 		case "Error":
 			message := strings.TrimSpace(msg.Message)

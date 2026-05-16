@@ -947,20 +947,21 @@ function InGameView(props: {
       }
     },
   });
+  const { send: sendAudio, sendBinary: sendAudioBinary, status: audioStatus } = audio;
 
   useEffect(() => {
     if (props.connected && isYourTurn) {
-      audio.send({ type: "audio:start", gameId: phase.gameId });
+      sendAudio({ type: "audio:start", gameId: phase.gameId });
     } else {
-      audio.send({ type: "audio:stop", gameId: phase.gameId });
+      sendAudio({ type: "audio:stop", gameId: phase.gameId });
       setVoiceTranscript("");
     }
-  }, [audio, isYourTurn, phase.gameId, props.connected]);
+  }, [sendAudio, isYourTurn, phase.gameId, props.connected]);
 
   useVoiceRecorder({
     stream: mic.stream,
-    active: props.connected && isYourTurn && mic.status === "ready" && audio.status === "open",
-    onChunk: audio.sendBinary,
+    active: props.connected && isYourTurn && mic.status === "ready" && audioStatus === "open",
+    onChunk: sendAudioBinary,
   });
 
   const opponentColor: Color = phase.color === "white" ? "black" : "white";
@@ -1021,7 +1022,7 @@ function InGameView(props: {
             isYourTurn={isYourTurn}
             analyser={mic.analyser}
             micStatus={mic.status}
-            audioStatus={audio.status}
+            audioStatus={audioStatus}
             transcript={voiceTranscript}
             error={isReconnecting ? "Reconnecting to game server..." : phase.lastError}
             illegalCount={phase.illegalCount}
@@ -1031,7 +1032,7 @@ function InGameView(props: {
             onSubmitTranscript={(text) => {
               setVoiceTranscript(text);
               if (!props.connected) return;
-              audio.send({ type: "audio:transcript", gameId: phase.gameId, text });
+              sendAudio({ type: "audio:transcript", gameId: phase.gameId, text });
             }}
           />
 
