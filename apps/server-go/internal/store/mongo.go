@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/game"
@@ -121,6 +122,9 @@ func (s *MongoStore) EnsureUser(ctx context.Context, clerkUserID string, fallbac
 		return game.UserDoc{}, err
 	}
 
+	if isGuestClerkUser(row.ClerkUserID) {
+		return row, nil
+	}
 	if err := s.EnsureRatingRow(ctx, row.ID, game.ModeEasy); err != nil {
 		return game.UserDoc{}, err
 	}
@@ -173,6 +177,23 @@ func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor)
 		return ratedDoc, nil
 	}
 	doc.ExpiresAt = doc.EndedAt.Add(49 * 24 * time.Hour)
+	whiteEligible, err := s.isRatingEligibleUser(ctx, doc.White.UserID)
+	if err != nil {
+		return doc, err
+	}
+	blackEligible, err := s.isRatingEligibleUser(ctx, doc.Black.UserID)
+	if err != nil {
+		return doc, err
+	}
+	if !whiteEligible || !blackEligible {
+		_, err = s.db.Collection("games").ReplaceOne(
+			ctx,
+			bson.M{"_id": doc.ID},
+			doc,
+			options.Replace().SetUpsert(true),
+		)
+		return doc, err
+	}
 	whiteRating, err := s.ratingRowForPlayer(ctx, doc.White, doc.Mode)
 	if err != nil {
 		return doc, err
@@ -236,7 +257,13 @@ func rateFinishedGame(doc game.GameDoc, whiteRating game.RatingDoc, blackRating 
 }
 
 func (s *MongoStore) ratingRowForPlayer(ctx context.Context, player game.PlayerSnapshot, mode string) (game.RatingDoc, error) {
-	if !isPersistedUser(player.UserID) {
+	if !isPersistedUserID(player.UserID) {
+		return fallbackRatingRow(player), nil
+	}
+	if persisted, err := s.isRatingEligibleUser(ctx, player.UserID); err != nil || !persisted {
+		if err != nil {
+			return game.RatingDoc{}, err
+		}
 		return fallbackRatingRow(player), nil
 	}
 	if err := s.EnsureRatingRow(ctx, player.UserID, mode); err != nil {
@@ -258,12 +285,20 @@ func fallbackRatingRow(player game.PlayerSnapshot) game.RatingDoc {
 }
 
 func (s *MongoStore) persistRatingUpdates(ctx context.Context, doc game.GameDoc, rated game.RatedGame) error {
-	if doc.White.RatingAfter != nil && isPersistedUser(doc.White.UserID) {
+	whitePersisted, err := s.isRatingEligibleUser(ctx, doc.White.UserID)
+	if err != nil {
+		return err
+	}
+	blackPersisted, err := s.isRatingEligibleUser(ctx, doc.Black.UserID)
+	if err != nil {
+		return err
+	}
+	if doc.White.RatingAfter != nil && whitePersisted {
 		if err := s.updateRating(ctx, doc.White.UserID, doc.Mode, rated.White); err != nil {
 			return err
 		}
 	}
-	if doc.Black.RatingAfter != nil && isPersistedUser(doc.Black.UserID) {
+	if doc.Black.RatingAfter != nil && blackPersisted {
 		if err := s.updateRating(ctx, doc.Black.UserID, doc.Mode, rated.Black); err != nil {
 			return err
 		}
@@ -287,8 +322,33 @@ func (s *MongoStore) updateRating(ctx context.Context, userID string, mode strin
 	return err
 }
 
-func isPersistedUser(userID string) bool {
-	return userID != "" && len(userID) >= 4 && userID[:4] != "bot:"
+func (s *MongoStore) isRatingEligibleUser(ctx context.Context, userID string) (bool, error) {
+	if s == nil {
+		return isPersistedUserID(userID), nil
+	}
+	if !isPersistedUserID(userID) {
+		return false, nil
+	}
+	var user game.UserDoc
+	if err := s.db.Collection("users").FindOne(
+		ctx,
+		bson.M{"_id": userID, "clerkUserId": bson.M{"$not": bson.Regex{Pattern: "^guest:"}}},
+		options.FindOne().SetProjection(bson.M{"clerkUserId": 1}),
+	).Decode(&user); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func isPersistedUserID(userID string) bool {
+	return userID != "" && !strings.HasPrefix(userID, "bot:") && !strings.HasPrefix(userID, "guest:")
+}
+
+func isGuestClerkUser(clerkUserID string) bool {
+	return strings.HasPrefix(clerkUserID, "guest:")
 }
 
 func floatPtr(value float64) *float64 {

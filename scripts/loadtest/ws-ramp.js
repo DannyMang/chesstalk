@@ -1,23 +1,37 @@
 // k6 WebSocket load test for the ChessTalk Go server.
 //
 // Usage:
-//   WS_URL=wss://your-server/game GUEST_PREFIX=load \
+//   WS_URL=wss://your-server/game MAX_VUS=1000 \
 //     k6 run scripts/loadtest/ws-ramp.js
 //
-// Ramps 0 -> 1000 concurrent WS connections over 5 minutes, holds for 5,
-// then drains. Each virtual user joins matchmaking, plays a fixed sequence
-// of moves on a 5s interval, and disconnects after ~60s of session time.
+// Ramps 0 -> MAX_VUS concurrent WS connections (default 1000). Each virtual
+// user joins matchmaking, plays a fixed sequence of moves on a 5s interval,
+// and disconnects after ~60s. Total run time is ~11 minutes.
 //
-// Set GUEST_PREFIX so each VU registers as a unique guest user.
+// Env vars:
+//   WS_URL       — wss:// or ws:// URL to the /game endpoint (required)
+//   ORIGIN       — Origin header to send; must match ALLOWED_ORIGINS on the
+//                  server. Defaults to http://localhost:3000.
+//   MAX_VUS      — peak concurrent connections (default 1000)
+//   GUEST_PREFIX — unique per-run prefix so guest IDs don't collide
 
 import ws from "k6/ws";
 import { check } from "k6";
 
+const MAX_VUS = parseInt(__ENV.MAX_VUS || "1000", 10);
+const ORIGIN = __ENV.ORIGIN || "http://localhost:3000";
+
+function gameUrl(base) {
+  if (!base) return "ws://localhost:8787/game";
+  if (base.endsWith("/game")) return base;
+  return base.replace(/\/$/, "") + "/game";
+}
+
 export const options = {
   stages: [
-    { duration: "2m", target: 500 },
-    { duration: "3m", target: 1000 },
-    { duration: "5m", target: 1000 },
+    { duration: "2m", target: Math.floor(MAX_VUS / 2) },
+    { duration: "3m", target: MAX_VUS },
+    { duration: "5m", target: MAX_VUS },
     { duration: "1m", target: 0 },
   ],
   thresholds: {
@@ -26,7 +40,7 @@ export const options = {
   },
 };
 
-const WS_URL = __ENV.WS_URL || "ws://localhost:8787/game";
+const WS_URL = gameUrl(__ENV.WS_URL);
 const GUEST_PREFIX = __ENV.GUEST_PREFIX || "loadtest";
 
 // Two minimally legal openings; we alternate VUs across them so paired
@@ -42,7 +56,10 @@ export default function () {
   const url = `${WS_URL}${sep}guestId=${guestId}`;
   const script = SCRIPTS[__VU % SCRIPTS.length];
 
-  const res = ws.connect(url, {}, (socket) => {
+  const res = ws.connect(
+    url,
+    { headers: { Origin: ORIGIN }, tags: { name: "ws-game" } },
+    (socket) => {
     let gameId = null;
     let moveIdx = 0;
     let myColor = null;

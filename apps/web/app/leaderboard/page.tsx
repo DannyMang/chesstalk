@@ -17,7 +17,10 @@ export default async function LeaderboardPage() {
   const userIds = Array.from(new Set(ratings.map((rating) => rating.userId)));
   const users = userIds.length
     ? await usersCollection(db)
-        .find({ _id: { $in: userIds } })
+        .find({
+          _id: { $in: userIds },
+          clerkUserId: { $not: /^guest:/ },
+        })
         .toArray()
     : [];
   const usernamesById = new Map(users.map((user) => [user._id, user.username]));
