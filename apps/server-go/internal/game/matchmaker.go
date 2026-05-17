@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 )
@@ -31,41 +32,40 @@ type MatchResult struct {
 	Other   PairedSide
 }
 
+type MatchHandler func(MatchResult)
+
 type Matchmaker struct {
 	mu         sync.Mutex
-	pools      map[string]Waiter
+	pools      map[string][]*Waiter
 	userToPool map[string]string
+	onMatch    MatchHandler
+	stopCh     chan struct{}
 }
 
 func NewMatchmaker() *Matchmaker {
 	return &Matchmaker{
-		pools:      make(map[string]Waiter),
+		pools:      make(map[string][]*Waiter),
 		userToPool: make(map[string]string),
 	}
+}
+
+func (m *Matchmaker) SetMatchHandler(h MatchHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onMatch = h
 }
 
 func (m *Matchmaker) Enqueue(userID string, sender Sender, mode string, tc TimeControl, info OpponentInfo) MatchResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if existing := m.userToPool[userID]; existing != "" {
+		m.removeFromPoolLocked(userID, existing)
+	}
+
 	key := poolKey(mode, tc)
-	waiter, ok := m.pools[key]
-	if ok && waiter.UserID != userID {
-		delete(m.pools, key)
-		delete(m.userToPool, waiter.UserID)
-		return pairPlayers(userID, sender, info, waiter, mode, tc)
-	}
-
-	if ok && waiter.UserID == userID {
-		delete(m.pools, key)
-		delete(m.userToPool, userID)
-	}
-	if existing := m.userToPool[userID]; existing != "" && existing != key {
-		delete(m.pools, existing)
-		delete(m.userToPool, userID)
-	}
-
-	m.pools[key] = Waiter{
+	queue := m.pools[key]
+	newcomer := &Waiter{
 		UserID:       userID,
 		Sender:       sender,
 		OpponentInfo: info,
@@ -73,6 +73,29 @@ func (m *Matchmaker) Enqueue(userID string, sender Sender, mode string, tc TimeC
 		TimeControl:  tc,
 		JoinedAt:     time.Now(),
 	}
+
+	if len(queue) > 0 {
+		best := -1
+		bestDelta := math.MaxFloat64
+		newcomerWindow := ratingWindow(0)
+		for i, w := range queue {
+			peerWindow := ratingWindow(time.Since(w.JoinedAt))
+			tolerance := math.Min(newcomerWindow, peerWindow)
+			delta := math.Abs(w.OpponentInfo.Rating - newcomer.OpponentInfo.Rating)
+			if delta <= tolerance && delta < bestDelta {
+				best = i
+				bestDelta = delta
+			}
+		}
+		if best >= 0 {
+			peer := queue[best]
+			m.pools[key] = append(queue[:best], queue[best+1:]...)
+			delete(m.userToPool, peer.UserID)
+			return pairPlayers(newcomer, peer, mode, tc)
+		}
+	}
+
+	m.pools[key] = append(queue, newcomer)
 	m.userToPool[userID] = key
 	return MatchResult{}
 }
@@ -84,9 +107,16 @@ func (m *Matchmaker) Leave(userID string) {
 	if key == "" {
 		return
 	}
-	waiter, ok := m.pools[key]
-	if ok && waiter.UserID == userID {
-		delete(m.pools, key)
+	m.removeFromPoolLocked(userID, key)
+}
+
+func (m *Matchmaker) removeFromPoolLocked(userID, key string) {
+	queue := m.pools[key]
+	for i, w := range queue {
+		if w.UserID == userID {
+			m.pools[key] = append(queue[:i], queue[i+1:]...)
+			break
+		}
 	}
 	delete(m.userToPool, userID)
 }
@@ -94,34 +124,134 @@ func (m *Matchmaker) Leave(userID string) {
 func (m *Matchmaker) Depth(mode string, tc TimeControl) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.pools[poolKey(mode, tc)]; ok {
-		return 1
-	}
-	return 0
+	return len(m.pools[poolKey(mode, tc)])
 }
 
 func (m *Matchmaker) TotalDepth() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return len(m.pools)
+	total := 0
+	for _, q := range m.pools {
+		total += len(q)
+	}
+	return total
+}
+
+func (m *Matchmaker) StartTicker(interval time.Duration) {
+	m.mu.Lock()
+	if m.stopCh != nil {
+		m.mu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	m.stopCh = stop
+	m.mu.Unlock()
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				m.runMatching()
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (m *Matchmaker) StopTicker() {
+	m.mu.Lock()
+	if m.stopCh == nil {
+		m.mu.Unlock()
+		return
+	}
+	close(m.stopCh)
+	m.stopCh = nil
+	m.mu.Unlock()
+}
+
+func (m *Matchmaker) runMatching() {
+	m.mu.Lock()
+	handler := m.onMatch
+	var matches []MatchResult
+	for key, queue := range m.pools {
+		for {
+			a, b, idxA, idxB := findBestPairLocked(queue)
+			if a == nil {
+				break
+			}
+			matches = append(matches, pairPlayers(a, b, a.Mode, a.TimeControl))
+			delete(m.userToPool, a.UserID)
+			delete(m.userToPool, b.UserID)
+			high, low := idxA, idxB
+			if high < low {
+				high, low = low, high
+			}
+			queue = append(queue[:high], queue[high+1:]...)
+			queue = append(queue[:low], queue[low+1:]...)
+		}
+		m.pools[key] = queue
+	}
+	m.mu.Unlock()
+
+	if handler != nil {
+		for _, match := range matches {
+			handler(match)
+		}
+	}
+}
+
+func findBestPairLocked(queue []*Waiter) (*Waiter, *Waiter, int, int) {
+	now := time.Now()
+	for i := 0; i < len(queue); i++ {
+		a := queue[i]
+		windowA := ratingWindow(now.Sub(a.JoinedAt))
+		bestIdx := -1
+		bestDelta := math.MaxFloat64
+		for j := i + 1; j < len(queue); j++ {
+			b := queue[j]
+			windowB := ratingWindow(now.Sub(b.JoinedAt))
+			tolerance := math.Min(windowA, windowB)
+			delta := math.Abs(a.OpponentInfo.Rating - b.OpponentInfo.Rating)
+			if delta <= tolerance && delta < bestDelta {
+				bestIdx = j
+				bestDelta = delta
+			}
+		}
+		if bestIdx >= 0 {
+			return a, queue[bestIdx], i, bestIdx
+		}
+	}
+	return nil, nil, -1, -1
+}
+
+func ratingWindow(elapsed time.Duration) float64 {
+	expansions := int64(elapsed.Seconds()) / 10
+	window := 50.0 + 50.0*float64(expansions)
+	if window > 400 {
+		window = 400
+	}
+	return window
 }
 
 func poolKey(mode string, tc TimeControl) string {
 	return fmt.Sprintf("%s|%d+%d", mode, tc.InitialSeconds, tc.IncrementSeconds)
 }
 
-func pairPlayers(userID string, sender Sender, info OpponentInfo, waiter Waiter, mode string, tc TimeControl) MatchResult {
+func pairPlayers(newcomer, peer *Waiter, mode string, tc TimeControl) MatchResult {
 	newcomerIsWhite := randomBool()
-	whiteInfo := info
-	blackInfo := waiter.OpponentInfo
+	whiteInfo := newcomer.OpponentInfo
+	blackInfo := peer.OpponentInfo
 	newcomerColor := ColorWhite
-	waiterColor := ColorBlack
+	peerColor := ColorBlack
 
 	if !newcomerIsWhite {
-		whiteInfo = waiter.OpponentInfo
-		blackInfo = info
+		whiteInfo = peer.OpponentInfo
+		blackInfo = newcomer.OpponentInfo
 		newcomerColor = ColorBlack
-		waiterColor = ColorWhite
+		peerColor = ColorWhite
 	}
 
 	actor := NewActor(NewActorParams{
@@ -145,16 +275,16 @@ func pairPlayers(userID string, sender Sender, info OpponentInfo, waiter Waiter,
 		Matched: true,
 		Game:    actor,
 		Self: PairedSide{
-			UserID:   userID,
-			Sender:   sender,
+			UserID:   newcomer.UserID,
+			Sender:   newcomer.Sender,
 			Color:    newcomerColor,
-			Opponent: waiter.OpponentInfo,
+			Opponent: peer.OpponentInfo,
 		},
 		Other: PairedSide{
-			UserID:   waiter.UserID,
-			Sender:   waiter.Sender,
-			Color:    waiterColor,
-			Opponent: info,
+			UserID:   peer.UserID,
+			Sender:   peer.Sender,
+			Color:    peerColor,
+			Opponent: newcomer.OpponentInfo,
 		},
 	}
 }

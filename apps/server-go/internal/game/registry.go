@@ -6,9 +6,10 @@ import (
 )
 
 type Registry struct {
-	mu     sync.RWMutex
-	games  map[string]*Actor
-	stopCh chan struct{}
+	mu          sync.RWMutex
+	games       map[string]*Actor
+	stopCh      chan struct{}
+	onTickerLag func(lagMS int64)
 }
 
 func NewRegistry() *Registry {
@@ -43,6 +44,18 @@ func (r *Registry) All() []*Actor {
 	return games
 }
 
+func (r *Registry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return len(r.games)
+}
+
+func (r *Registry) SetTickerLagHandler(fn func(lagMS int64)) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onTickerLag = fn
+}
+
 func (r *Registry) StartTicker() {
 	r.mu.Lock()
 	if r.stopCh != nil {
@@ -54,15 +67,27 @@ func (r *Registry) StartTicker() {
 	r.mu.Unlock()
 
 	go func() {
-		ticker := time.NewTicker(time.Second)
+		interval := time.Second
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		expected := time.Now().Add(interval)
 		for {
 			select {
-			case <-ticker.C:
-				now := time.Now()
-				for _, actor := range r.All() {
-					actor.Tick(now)
+			case fired := <-ticker.C:
+				lag := fired.Sub(expected).Milliseconds()
+				if lag < 0 {
+					lag = 0
 				}
+				r.mu.RLock()
+				handler := r.onTickerLag
+				r.mu.RUnlock()
+				if handler != nil {
+					handler(lag)
+				}
+				for _, actor := range r.All() {
+					actor.Tick(fired)
+				}
+				expected = fired.Add(interval)
 			case <-stopCh:
 				return
 			}

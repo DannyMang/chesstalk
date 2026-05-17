@@ -85,13 +85,21 @@ func (r *InviteRegistry) Join(inviteID string, userID string, sender Sender, inf
 	delete(r.userToInvite, invite.UserID)
 	r.leaveByUserLocked(userID)
 
-	result := pairPlayers(userID, sender, info, Waiter{
+	newcomer := &Waiter{
+		UserID:       userID,
+		Sender:       sender,
+		OpponentInfo: info,
+		Mode:         invite.Mode,
+		TimeControl:  invite.TimeControl,
+	}
+	peer := &Waiter{
 		UserID:       invite.UserID,
 		Sender:       invite.Sender,
 		OpponentInfo: invite.OpponentInfo,
 		Mode:         invite.Mode,
 		TimeControl:  invite.TimeControl,
-	}, invite.Mode, invite.TimeControl)
+	}
+	result := pairPlayers(newcomer, peer, invite.Mode, invite.TimeControl)
 
 	return InviteJoinResult{
 		Matched: true,

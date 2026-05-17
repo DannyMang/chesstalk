@@ -98,6 +98,8 @@ const MODE_OPTIONS: Array<{ value: Mode; label: string; description: string }> =
 
 const STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
+const ACTIVE_GAME_STORAGE_KEY = "chesstalk:activeGameId";
+
 function formatResult(result: GameResult, yourColor: Color): "Win" | "Loss" | "Draw" {
   if (result === "draw") return "Draw";
   return result === yourColor ? "Win" : "Loss";
@@ -168,6 +170,7 @@ function PlayClient() {
   const searchParams = useSearchParams();
   const inviteId = searchParams.get("invite")?.trim() ?? "";
   const hasJoinedInviteRef = useRef(false);
+  const hasAttemptedResumeRef = useRef(false);
   const { status, send, subscribe } = useGameSocket();
   const [phase, setPhase] = useState<Phase>({ kind: "pre" });
   const [selectedMode, setSelectedMode] = useState<Mode>(Mode.Easy);
@@ -216,6 +219,13 @@ function PlayClient() {
       }
 
       if (incoming.type === "error") {
+        if (
+          "code" in incoming &&
+          incoming.code === "game_not_found" &&
+          typeof window !== "undefined"
+        ) {
+          sessionStorage.removeItem(ACTIVE_GAME_STORAGE_KEY);
+        }
         setInvite((current) => {
           if (current.status !== "creating" && current.status !== "joining") {
             return current;
@@ -245,6 +255,26 @@ function PlayClient() {
     if (status !== "open" || activeGameId === null) return;
     send({ type: "game:resume", gameId: activeGameId });
   }, [activeGameId, send, status]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (phase.kind === "in-game") {
+      sessionStorage.setItem(ACTIVE_GAME_STORAGE_KEY, phase.gameId);
+    } else if (phase.kind === "pre" || phase.kind === "ended") {
+      sessionStorage.removeItem(ACTIVE_GAME_STORAGE_KEY);
+    }
+  }, [phase]);
+
+  useEffect(() => {
+    if (status !== "open") return;
+    if (phase.kind !== "pre") return;
+    if (hasAttemptedResumeRef.current) return;
+    if (typeof window === "undefined") return;
+    const stored = sessionStorage.getItem(ACTIVE_GAME_STORAGE_KEY);
+    if (!stored) return;
+    hasAttemptedResumeRef.current = true;
+    send({ type: "game:resume", gameId: stored });
+  }, [phase.kind, send, status]);
 
   const startQueue = useCallback((): void => {
     const timeControl = TIME_CONTROLS[selectedPreset];

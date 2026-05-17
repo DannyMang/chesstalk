@@ -44,6 +44,8 @@ type Actor struct {
 	connections  map[string]Sender
 	disconnects  map[string]time.Time
 
+	dirty bool
+
 	endListeners  []EndListener
 	moveListeners []MoveListener
 }
@@ -226,7 +228,7 @@ func (a *Actor) Broadcast(value any) {
 	a.mu.Unlock()
 
 	for _, sender := range senders {
-		sender.SendJSON(value)
+		go sender.SendJSON(value)
 	}
 }
 
@@ -345,6 +347,7 @@ func (a *Actor) ProposeMove(userID string, raw string, now time.Time) MoveResult
 		BlackClockMS: a.blackClockMS,
 	}
 	a.moves = append(a.moves, record)
+	a.dirty = true
 
 	moveListeners := append([]MoveListener(nil), a.moveListeners...)
 	endListeners, terminal := a.checkTerminalLocked(color, now)
@@ -487,17 +490,26 @@ func (a *Actor) Tick(now time.Time) bool {
 	a.zeroClockLocked(turn)
 	listeners := a.endGameLocked(WinnerFromColor(OtherColor(turn)), TerminationTimeout, now)
 	a.mu.Unlock()
-	a.emitEnd(listeners)
+	go a.emitEnd(listeners)
 	return true
 }
 
 func (a *Actor) Snapshot() GameDoc {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.snapshotLocked()
+}
+
+func (a *Actor) snapshotLocked() GameDoc {
 	illegal := map[string]int{ColorWhite: a.illegalCount[ColorWhite], ColorBlack: a.illegalCount[ColorBlack]}
 	moves := append([]MoveRecord(nil), a.moves...)
+	status := GameStatusActive
+	if a.status == "ended" {
+		status = GameStatusEnded
+	}
 	return GameDoc{
 		ID:           a.ID,
+		Status:       status,
 		Mode:         a.Mode,
 		TimeControl:  a.TimeControl,
 		White:        a.White,
@@ -507,9 +519,89 @@ func (a *Actor) Snapshot() GameDoc {
 		PGN:          a.chessGame.String(),
 		Moves:        moves,
 		IllegalCount: illegal,
+		WhiteClockMS: a.whiteClockMS,
+		BlackClockMS: a.blackClockMS,
+		LastMoveAt:   a.lastMoveAt,
+		DrawOfferBy:  a.drawOfferBy,
 		StartedAt:    a.StartedAt,
 		EndedAt:      a.endedAt,
 	}
+}
+
+func (a *Actor) IsActive() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.status == "active"
+}
+
+func (a *Actor) TakeDirty() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.dirty {
+		return false
+	}
+	a.dirty = false
+	return true
+}
+
+func NewActorFromDoc(doc GameDoc) (*Actor, error) {
+	chessGame := chess.NewGame()
+	for _, m := range doc.Moves {
+		raw := m.UCI
+		if raw == "" {
+			raw = m.SAN
+		}
+		if raw == "" {
+			raw = m.Raw
+		}
+		move, err := parseMove(chessGame, raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := chessGame.Move(move); err != nil {
+			return nil, err
+		}
+	}
+	status := "active"
+	if doc.Status == GameStatusEnded || doc.Result != nil {
+		status = "ended"
+	}
+	illegal := map[string]int{ColorWhite: 0, ColorBlack: 0}
+	for color, count := range doc.IllegalCount {
+		illegal[color] = count
+	}
+	lastMoveAt := doc.LastMoveAt
+	if lastMoveAt.IsZero() {
+		lastMoveAt = doc.StartedAt
+	}
+	whiteClock := doc.WhiteClockMS
+	blackClock := doc.BlackClockMS
+	if whiteClock == 0 && blackClock == 0 {
+		initial := int64(doc.TimeControl.InitialSeconds) * 1000
+		whiteClock = initial
+		blackClock = initial
+	}
+	return &Actor{
+		ID:           doc.ID,
+		Mode:         doc.Mode,
+		TimeControl:  doc.TimeControl,
+		White:        doc.White,
+		Black:        doc.Black,
+		StartedAt:    doc.StartedAt,
+		chessGame:    chessGame,
+		moves:        append([]MoveRecord(nil), doc.Moves...),
+		whiteClockMS: whiteClock,
+		blackClockMS: blackClock,
+		lastMoveAt:   lastMoveAt,
+		status:       status,
+		result:       doc.Result,
+		termination:  doc.Termination,
+		endedAt:      doc.EndedAt,
+		illegalCount: illegal,
+		drawOfferBy:  doc.DrawOfferBy,
+		connections:  make(map[string]Sender),
+		disconnects:  make(map[string]time.Time),
+	}, nil
 }
 
 func (a *Actor) clockForLocked(color string) int64 {

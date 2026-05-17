@@ -5,15 +5,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/DannyMang/chesstalk/apps/server-go/internal/auth"
-	"github.com/DannyMang/chesstalk/apps/server-go/internal/config"
-	"github.com/DannyMang/chesstalk/apps/server-go/internal/store"
 	socket "github.com/DannyMang/chesstalk/apps/server-go/internal/ws"
 )
 
-func New(cfg config.Config, logger *slog.Logger, mongoStore *store.MongoStore, verifier *auth.Verifier) http.Handler {
+func New(logger *slog.Logger, hub *socket.Hub) http.Handler {
 	mux := http.NewServeMux()
-	hub := socket.NewHub(cfg, logger, mongoStore, verifier)
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("content-type", "application/json")
@@ -23,6 +19,7 @@ func New(cfg config.Config, logger *slog.Logger, mongoStore *store.MongoStore, v
 
 	mux.HandleFunc("GET /game", hub.HandleGame)
 	mux.HandleFunc("GET /audio", hub.HandleAudio)
+	mux.HandleFunc("GET /metrics/internal", hub.HandleMetrics)
 
 	return requestLogger(logger, mux)
 }

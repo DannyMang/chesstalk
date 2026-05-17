@@ -23,7 +23,17 @@ func Connect(ctx context.Context, uri string) (*MongoStore, error) {
 	if uri == "" {
 		return nil, errors.New("MONGODB_URI is required")
 	}
-	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	clientOpts := options.Client().
+		ApplyURI(uri).
+		SetMaxPoolSize(100).
+		SetMinPoolSize(10).
+		SetMaxConnIdleTime(60 * time.Second).
+		SetServerSelectionTimeout(5 * time.Second).
+		SetConnectTimeout(10 * time.Second).
+		SetTimeout(15 * time.Second).
+		SetRetryWrites(true).
+		SetRetryReads(true)
+	client, err := mongo.Connect(clientOpts)
 	if err != nil {
 		return nil, err
 	}
@@ -94,29 +104,20 @@ func (s *MongoStore) EnsureUser(ctx context.Context, clerkUserID string, fallbac
 	}
 
 	users := s.db.Collection("users")
-	var existing game.UserDoc
-	err := users.FindOne(ctx, bson.M{"clerkUserId": clerkUserID}).Decode(&existing)
-	if err == nil {
-		return existing, nil
+	filter := bson.M{"clerkUserId": clerkUserID}
+	update := bson.M{
+		"$setOnInsert": game.UserDoc{
+			ID:              randomID(),
+			ClerkUserID:     clerkUserID,
+			Username:        fallbackUsername,
+			NameChangesUsed: 0,
+			CreatedAt:       time.Now(),
+			Settings:        defaultSettings(),
+		},
 	}
-	if !errors.Is(err, mongo.ErrNoDocuments) {
-		return game.UserDoc{}, err
-	}
-
-	now := time.Now()
-	row := game.UserDoc{
-		ID:              randomID(),
-		ClerkUserID:     clerkUserID,
-		Username:        fallbackUsername,
-		NameChangesUsed: 0,
-		CreatedAt:       now,
-		Settings:        defaultSettings(),
-	}
-	if _, err := users.InsertOne(ctx, row); err != nil {
-		err = users.FindOne(ctx, bson.M{"clerkUserId": clerkUserID}).Decode(&existing)
-		if err == nil {
-			return existing, nil
-		}
+	opts := options.FindOneAndUpdate().SetUpsert(true).SetReturnDocument(options.After)
+	var row game.UserDoc
+	if err := users.FindOneAndUpdate(ctx, filter, update, opts).Decode(&row); err != nil {
 		return game.UserDoc{}, err
 	}
 
@@ -166,6 +167,7 @@ func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor)
 	if doc.Result == nil || doc.Termination == nil || doc.EndedAt == nil {
 		return doc, fmt.Errorf("game %s is not finished", doc.ID)
 	}
+	doc.Status = game.GameStatusEnded
 	if s == nil {
 		ratedDoc, _ := rateFinishedGame(doc, fallbackRatingRow(doc.White), fallbackRatingRow(doc.Black))
 		return ratedDoc, nil
@@ -184,8 +186,43 @@ func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor)
 	if err := s.persistRatingUpdates(ctx, doc, rated); err != nil {
 		return doc, err
 	}
-	_, err = s.db.Collection("games").InsertOne(ctx, doc)
+	_, err = s.db.Collection("games").ReplaceOne(
+		ctx,
+		bson.M{"_id": doc.ID},
+		doc,
+		options.Replace().SetUpsert(true),
+	)
 	return doc, err
+}
+
+func (s *MongoStore) UpsertActiveGame(ctx context.Context, doc game.GameDoc) error {
+	if s == nil {
+		return nil
+	}
+	doc.Status = game.GameStatusActive
+	_, err := s.db.Collection("games").ReplaceOne(
+		ctx,
+		bson.M{"_id": doc.ID},
+		doc,
+		options.Replace().SetUpsert(true),
+	)
+	return err
+}
+
+func (s *MongoStore) LoadActiveGames(ctx context.Context) ([]game.GameDoc, error) {
+	if s == nil {
+		return nil, nil
+	}
+	cursor, err := s.db.Collection("games").Find(ctx, bson.M{"status": game.GameStatusActive})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var docs []game.GameDoc
+	if err := cursor.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	return docs, nil
 }
 
 func rateFinishedGame(doc game.GameDoc, whiteRating game.RatingDoc, blackRating game.RatingDoc) (game.GameDoc, game.RatedGame) {

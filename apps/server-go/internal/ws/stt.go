@@ -23,14 +23,25 @@ const (
 )
 
 type STTService struct {
-	apiKey string
-	logger *slog.Logger
+	apiKey   string
+	logger   *slog.Logger
+	onErrorM func()
 }
 
 func NewSTTService(cfg config.Config, logger *slog.Logger) *STTService {
 	return &STTService{
 		apiKey: strings.TrimSpace(cfg.DeepgramAPIKey),
 		logger: logger.With("component", "stt"),
+	}
+}
+
+func (s *STTService) SetErrorObserver(fn func()) {
+	s.onErrorM = fn
+}
+
+func (s *STTService) recordError() {
+	if s.onErrorM != nil {
+		s.onErrorM()
 	}
 }
 
@@ -108,6 +119,7 @@ func (s *STTService) StartStream(opts STTStreamOptions) (*STTStream, error) {
 }
 
 func (s *STTService) providerDialError(resp *http.Response, err error) error {
+	s.recordError()
 	if resp == nil {
 		s.logger.Warn("deepgram websocket dial failed", "err", err)
 		return fmt.Errorf("speech-to-text connection failed: %w", err)

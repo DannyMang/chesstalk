@@ -14,6 +14,7 @@ import (
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/auth"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/config"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/game"
+	"github.com/DannyMang/chesstalk/apps/server-go/internal/metrics"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/protocol"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/ratelimit"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/store"
@@ -31,30 +32,113 @@ const (
 const botUserID = "bot:go-legal-move"
 
 type Hub struct {
-	config     config.Config
-	logger     *slog.Logger
-	store      *store.MongoStore
-	auth       *auth.Verifier
-	stt        *STTService
-	bot        *BotEngine
-	registry   *game.Registry
-	matchmaker *game.Matchmaker
-	invites    *game.InviteRegistry
+	config         config.Config
+	logger         *slog.Logger
+	store          *store.MongoStore
+	auth           *auth.Verifier
+	stt            *STTService
+	bot            *BotEngine
+	registry       *game.Registry
+	matchmaker     *game.Matchmaker
+	invites        *game.InviteRegistry
+	metrics        *metrics.Metrics
+	checkpointStop chan struct{}
+	metricsStop    chan struct{}
 }
 
 func NewHub(cfg config.Config, logger *slog.Logger, mongoStore *store.MongoStore, verifier *auth.Verifier) *Hub {
 	registry := game.NewRegistry()
+	m := metrics.New()
+	registry.SetTickerLagHandler(m.SetTickerLagMS)
 	registry.StartTicker()
-	return &Hub{
+	matchmaker := game.NewMatchmaker()
+	stt := NewSTTService(cfg, logger)
+	stt.SetErrorObserver(m.IncDeepgramError)
+	hub := &Hub{
 		config:     cfg,
 		logger:     logger,
 		store:      mongoStore,
 		auth:       verifier,
-		stt:        NewSTTService(cfg, logger),
+		stt:        stt,
 		bot:        NewBotEngine(cfg, logger),
 		registry:   registry,
-		matchmaker: game.NewMatchmaker(),
+		matchmaker: matchmaker,
 		invites:    game.NewInviteRegistry(),
+		metrics:    m,
+	}
+	matchmaker.SetMatchHandler(func(result game.MatchResult) {
+		hub.beginGame(result.Game, result.Self, result.Other)
+	})
+	matchmaker.StartTicker(time.Second)
+	return hub
+}
+
+func (h *Hub) RehydrateActiveGames(ctx context.Context) error {
+	docs, err := h.store.LoadActiveGames(ctx)
+	if err != nil {
+		return err
+	}
+	for _, doc := range docs {
+		actor, err := game.NewActorFromDoc(doc)
+		if err != nil {
+			h.logger.Warn("failed to rehydrate game", "gameId", doc.ID, "err", err)
+			continue
+		}
+		actor.OnEnd(h.finalizeAndBroadcast)
+		h.registry.Register(actor)
+	}
+	h.logger.Info("rehydrated active games", "count", len(docs))
+	return nil
+}
+
+func (h *Hub) StartCheckpointer(interval time.Duration) {
+	if h.checkpointStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	h.checkpointStop = stop
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				h.flushDirtyGames()
+			case <-stop:
+				h.flushDirtyGames()
+				return
+			}
+		}
+	}()
+}
+
+func (h *Hub) StopCheckpointer() {
+	if h.checkpointStop == nil {
+		return
+	}
+	close(h.checkpointStop)
+	h.checkpointStop = nil
+}
+
+func (h *Hub) flushDirtyGames() {
+	for _, actor := range h.registry.All() {
+		if !actor.IsActive() {
+			continue
+		}
+		if !actor.TakeDirty() {
+			continue
+		}
+		doc := actor.Snapshot()
+		go func(d game.GameDoc) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			start := time.Now()
+			err := h.store.UpsertActiveGame(ctx, d)
+			h.metrics.RecordMongo(time.Since(start))
+			if err != nil {
+				h.logger.Error("active game checkpoint failed", "gameId", d.ID, "err", err)
+			}
+		}(doc)
 	}
 }
 
@@ -64,6 +148,48 @@ func (h *Hub) HandleGame(w http.ResponseWriter, r *http.Request) {
 
 func (h *Hub) HandleAudio(w http.ResponseWriter, r *http.Request) {
 	h.handle(w, r, "audio")
+}
+
+func (h *Hub) HandleMetrics(w http.ResponseWriter, _ *http.Request) {
+	snap := h.metrics.Snapshot(int64(h.registry.Count()), int64(h.matchmaker.TotalDepth()))
+	w.Header().Set("content-type", "application/json")
+	_ = json.NewEncoder(w).Encode(snap)
+}
+
+func (h *Hub) StartMetricsEmitter(interval time.Duration) {
+	if h.metricsStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	h.metricsStop = stop
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				snap := h.metrics.Snapshot(int64(h.registry.Count()), int64(h.matchmaker.TotalDepth()))
+				h.logger.Info("metrics",
+					"active_ws", snap.ActiveWS,
+					"active_games", snap.ActiveGames,
+					"queue_depth", snap.QueueDepth,
+					"deepgram_errors_1m", snap.DeepgramErrors1m,
+					"mongo_p95_ms", snap.MongoP95MS,
+					"ticker_lag_ms", snap.TickerLagMS,
+				)
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (h *Hub) StopMetricsEmitter() {
+	if h.metricsStop == nil {
+		return
+	}
+	close(h.metricsStop)
+	h.metricsStop = nil
 }
 
 func (h *Hub) handle(w http.ResponseWriter, r *http.Request, kind string) {
@@ -101,6 +227,8 @@ func (h *Hub) handle(w http.ResponseWriter, r *http.Request, kind string) {
 		limiter:     newLimiter(kind),
 		lastSeen:    time.Now(),
 	}
+	h.metrics.IncWS()
+	defer h.metrics.DecWS()
 	client.run()
 }
 
@@ -532,7 +660,7 @@ func (c *client) handleQueueJoin(msg protocol.GameMessage) {
 		})
 		return
 	}
-	c.startGame(result.Game, result.Self, result.Other)
+	c.hub.beginGame(result.Game, result.Self, result.Other)
 }
 
 func (c *client) handleInviteCreate(msg protocol.GameMessage) {
@@ -570,16 +698,14 @@ func (c *client) handleInviteJoin(msg protocol.GameMessage) {
 		c.sendJSON(map[string]any{"type": "error", "code": code, "message": message})
 		return
 	}
-	c.startGame(result.Game, result.Self, result.Other)
+	c.hub.beginGame(result.Game, result.Self, result.Other)
 }
 
-func (c *client) startGame(actor *game.Actor, self game.PairedSide, other game.PairedSide) {
+func (h *Hub) beginGame(actor *game.Actor, self game.PairedSide, other game.PairedSide) {
 	actor.Attach(self.Color, self.Sender)
 	actor.Attach(other.Color, other.Sender)
-	c.hub.registry.Register(actor)
-	actor.OnEnd(func(ended *game.Actor) {
-		c.finalizeAndBroadcast(ended)
-	})
+	h.registry.Register(actor)
+	actor.OnEnd(h.finalizeAndBroadcast)
 
 	self.Sender.SendJSON(map[string]any{
 		"type":        "game:start",
@@ -629,9 +755,7 @@ func (c *client) handleBotStart(msg protocol.GameMessage) {
 	})
 	actor.Attach(playerColor, c)
 	c.hub.registry.Register(actor)
-	actor.OnEnd(func(ended *game.Actor) {
-		c.finalizeAndBroadcast(ended)
-	})
+	actor.OnEnd(c.hub.finalizeAndBroadcast)
 	actor.OnMove(func(moved *game.Actor, _ game.MoveRecord) {
 		c.scheduleBotMove(moved, strength)
 	})
@@ -766,19 +890,21 @@ func (c *client) handleAcceptDraw(msg protocol.GameMessage) {
 	actor.AcceptDraw(c.userID, time.Now())
 }
 
-func (c *client) finalizeAndBroadcast(actor *game.Actor) {
+func (h *Hub) finalizeAndBroadcast(actor *game.Actor) {
 	snapshot := actor.Snapshot()
 	if snapshot.Result == nil || snapshot.Termination == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	finished, err := c.hub.store.PersistFinishedGame(ctx, actor)
+	persistStart := time.Now()
+	finished, err := h.store.PersistFinishedGame(ctx, actor)
+	h.metrics.RecordMongo(time.Since(persistStart))
 	if err != nil {
-		c.logger.Error("persist finished game failed", "gameId", actor.ID, "err", err)
+		h.logger.Error("persist finished game failed", "gameId", actor.ID, "err", err)
 		finished = snapshot
 	}
 	cancel()
-	c.hub.registry.Unregister(actor.ID)
+	h.registry.Unregister(actor.ID)
 	whiteDelta, blackDelta := ratingDeltas(finished)
 	actor.SendTo(game.ColorWhite, map[string]any{
 		"type":                "game:end",

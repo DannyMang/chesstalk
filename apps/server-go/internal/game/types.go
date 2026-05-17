@@ -61,6 +61,7 @@ type MoveRecord struct {
 
 type GameDoc struct {
 	ID           string         `bson:"_id"`
+	Status       string         `bson:"status"`
 	Mode         string         `bson:"mode"`
 	TimeControl  TimeControl    `bson:"timeControl"`
 	White        PlayerSnapshot `bson:"white"`
@@ -70,10 +71,19 @@ type GameDoc struct {
 	PGN          string         `bson:"pgn"`
 	Moves        []MoveRecord   `bson:"moves"`
 	IllegalCount map[string]int `bson:"illegalCount"`
+	WhiteClockMS int64          `bson:"whiteClockMs"`
+	BlackClockMS int64          `bson:"blackClockMs"`
+	LastMoveAt   time.Time      `bson:"lastMoveAt"`
+	DrawOfferBy  string         `bson:"drawOfferBy,omitempty"`
 	StartedAt    time.Time      `bson:"startedAt"`
 	EndedAt      *time.Time     `bson:"endedAt"`
-	ExpiresAt    time.Time      `bson:"expiresAt"`
+	ExpiresAt    time.Time      `bson:"expiresAt,omitempty"`
 }
+
+const (
+	GameStatusActive = "active"
+	GameStatusEnded  = "ended"
+)
 
 type UserDoc struct {
 	ID              string       `bson:"_id"`

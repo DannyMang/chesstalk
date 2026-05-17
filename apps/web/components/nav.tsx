@@ -11,6 +11,7 @@ const links = [
   { href: "/leaderboard", label: "Leaderboard" },
   { href: "/settings", label: "Settings" },
   { href: "/profile", label: "Profile" },
+  { href: "/status", label: "Status" },
 ];
 
 export function Nav() {

@@ -13,6 +13,7 @@ import (
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/config"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/httpserver"
 	"github.com/DannyMang/chesstalk/apps/server-go/internal/store"
+	socket "github.com/DannyMang/chesstalk/apps/server-go/internal/ws"
 )
 
 func main() {
@@ -54,9 +55,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	hub := socket.NewHub(cfg, logger, mongoStore, verifier)
+
+	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	if err := hub.RehydrateActiveGames(ctx); err != nil {
+		logger.Error("rehydrate active games failed", "err", err)
+	}
+	cancel()
+
+	hub.StartCheckpointer(2 * time.Second)
+	defer hub.StopCheckpointer()
+	hub.StartMetricsEmitter(10 * time.Second)
+	defer hub.StopMetricsEmitter()
+
 	server := &http.Server{
 		Addr:              cfg.Addr(),
-		Handler:           httpserver.New(cfg, logger, mongoStore, verifier),
+		Handler:           httpserver.New(logger, hub),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
