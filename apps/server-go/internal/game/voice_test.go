@@ -42,6 +42,8 @@ func TestProposeSpokenMoveMatchesLegalMoves(t *testing.T) {
 		{name: "piece phrase", raw: "knight to f three", want: "Nf3"},
 		{name: "piece homophone", raw: "night to f three", want: "Nf3"},
 		{name: "piece alias", raw: "horse to f three", want: "Nf3"},
+		{name: "knight heard as nine", raw: "nine to f three", want: "Nf3"},
+		{name: "knight heard as 9", raw: "9 to f three", want: "Nf3"},
 	}
 
 	for _, tc := range tests {

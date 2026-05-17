@@ -20,6 +20,7 @@ var pieceLexicon = map[string]chess.PieceType{
 	"rook": chess.Rook, "rooks": chess.Rook, "tower": chess.Rook,
 	"bishop": chess.Bishop, "bishops": chess.Bishop,
 	"knight": chess.Knight, "knights": chess.Knight, "night": chess.Knight, "nite": chess.Knight, "horse": chess.Knight,
+	"nine": chess.Knight, "9": chess.Knight,
 	"pawn": chess.Pawn, "pawns": chess.Pawn,
 }
 

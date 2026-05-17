@@ -58,8 +58,8 @@ export default async function HistoryPage() {
   const docs = await games
     .find({
       $or: [
-        { "white.userId": internalUserId },
-        { "black.userId": internalUserId },
+        { "white.userId": internalUserId, "black.userId": { $not: /^bot:/ } },
+        { "black.userId": internalUserId, "white.userId": { $not: /^bot:/ } },
       ],
     })
     .sort({ endedAt: -1 })

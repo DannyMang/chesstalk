@@ -176,6 +176,9 @@ func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor)
 		ratedDoc, _ := rateFinishedGame(doc, fallbackRatingRow(doc.White), fallbackRatingRow(doc.Black))
 		return ratedDoc, nil
 	}
+	if hasBotPlayer(doc) {
+		return doc, nil
+	}
 	doc.ExpiresAt = doc.EndedAt.Add(49 * 24 * time.Hour)
 	whiteEligible, err := s.isRatingEligibleUser(ctx, doc.White.UserID)
 	if err != nil {
@@ -184,6 +187,9 @@ func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor)
 	blackEligible, err := s.isRatingEligibleUser(ctx, doc.Black.UserID)
 	if err != nil {
 		return doc, err
+	}
+	if !whiteEligible && !blackEligible {
+		return doc, nil
 	}
 	if !whiteEligible || !blackEligible {
 		_, err = s.db.Collection("games").ReplaceOne(
@@ -218,6 +224,9 @@ func (s *MongoStore) PersistFinishedGame(ctx context.Context, actor *game.Actor)
 
 func (s *MongoStore) UpsertActiveGame(ctx context.Context, doc game.GameDoc) error {
 	if s == nil {
+		return nil
+	}
+	if hasBotPlayer(doc) {
 		return nil
 	}
 	doc.Status = game.GameStatusActive
@@ -349,6 +358,10 @@ func isPersistedUserID(userID string) bool {
 
 func isGuestClerkUser(clerkUserID string) bool {
 	return strings.HasPrefix(clerkUserID, "guest:")
+}
+
+func hasBotPlayer(doc game.GameDoc) bool {
+	return strings.HasPrefix(doc.White.UserID, "bot:") || strings.HasPrefix(doc.Black.UserID, "bot:")
 }
 
 func floatPtr(value float64) *float64 {
